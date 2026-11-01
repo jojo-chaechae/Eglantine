@@ -21,6 +21,7 @@
 #include "dynarmic/backend/arm64/fastmem.h"
 #include "dynarmic/backend/arm64/fpsr_manager.h"
 #include "dynarmic/backend/arm64/reg_alloc.h"
+#include "dynarmic/backend/x64/exclusive_monitor_friend.h"
 #include "dynarmic/ir/acc_type.h"
 #include "dynarmic/ir/basic_block.h"
 #include "dynarmic/ir/microinstruction.h"
@@ -501,6 +502,138 @@ void InlinePageTableEmitWriteMemory(oaknut::CodeGenerator& code, EmitContext& ct
     code.l(*end);
 }
 
+// Exclusive accesses through the page table without the monitor's lock, as x64 does with fastmem
+// under Unsafe_IgnoreGlobalMonitor: the read records the address and value in this processor's
+// monitor slots, the write compares-and-swaps against that value. Addresses the table cannot map
+// fall back to the monitor's callbacks, which use the same slots.
+bool ShouldInlineExclusive(EmitContext& ctx, std::size_t bitsize) {
+    return bitsize != 128 && ctx.conf.page_table_pointer != 0 && ctx.conf.global_monitor != nullptr
+           && ctx.conf.HasOptimization(OptimizationFlag::Unsafe_IgnoreGlobalMonitor);
+}
+
+template<std::size_t bitsize>
+void InlinePageTableEmitExclusiveReadMemory(oaknut::CodeGenerator& code, EmitContext& ctx, IR::Inst* inst) {
+    auto args = ctx.reg_alloc.GetArgumentInfo(inst);
+    ctx.reg_alloc.PrepareForCall({}, args[1]);
+    const bool ordered = IsOrdered(args[2].GetImmediateAccType());
+
+    SharedLabel fallback = GenSharedLabel(), end = GenSharedLabel();
+
+    code.MOV(Wscratch0, 1);
+    code.STRB(Wscratch0, Xstate, ctx.conf.state_exclusive_state_offset);
+
+    // X1 holds the address (as for the callback), X0 receives the value.
+    const auto [Xbase, Xoffset] = InlinePageTableEmitVAddrLookup<bitsize>(code, ctx, X1, fallback);
+    EmitMemoryLdr<bitsize>(code, 0, Xbase, Xoffset, false);
+    code.MOV(X2, std::bit_cast<u64>(GetExclusiveMonitorAddressPointer(ctx.conf.global_monitor, ctx.conf.processor_id)));
+    code.STR(X1, X2);
+    code.MOV(X2, std::bit_cast<u64>(GetExclusiveMonitorValuePointer(ctx.conf.global_monitor, ctx.conf.processor_id)));
+    code.STR(X0, X2);
+    code.l(*end);
+    if (ordered) {
+        code.DMB(oaknut::BarrierOp::ISH);
+    }
+
+    ctx.deferred_emits.emplace_back([&code, &ctx, fallback, end] {
+        code.l(*fallback);
+        EmitRelocation(code, ctx, ExclusiveReadMemoryLinkTarget(bitsize));
+        code.B(*end);
+    });
+
+    ctx.reg_alloc.DefineAsRegister(inst, X0);
+}
+
+template<std::size_t bitsize>
+void InlinePageTableEmitExclusiveWriteMemory(oaknut::CodeGenerator& code, EmitContext& ctx, IR::Inst* inst) {
+    // ExclusiveMonitor::INVALID_EXCLUSIVE_ADDRESS
+    constexpr u64 invalid_exclusive_address = 0xDEAD'DEAD'DEAD'DEADull;
+
+    auto args = ctx.reg_alloc.GetArgumentInfo(inst);
+    ctx.reg_alloc.PrepareForCall({}, args[1], args[2]);
+    const bool ordered = IsOrdered(args[3].GetImmediateAccType());
+
+    SharedLabel fallback = GenSharedLabel(), end = GenSharedLabel();
+    oaknut::Label retry, mismatch;
+
+    // X1 holds the address and X2 the value (as for the callback), W0 receives the status.
+    if (ordered) {
+        code.DMB(oaknut::BarrierOp::ISH);
+    }
+    code.MOV(W0, 1);
+    code.LDRB(Wscratch0, Xstate, ctx.conf.state_exclusive_state_offset);
+    code.CBZ(Wscratch0, *end);
+    code.STRB(WZR, Xstate, ctx.conf.state_exclusive_state_offset);
+
+    // The host's exclusives fault on misaligned addresses.
+    if constexpr (bitsize > 8) {
+        code.TST(X1, bitsize / 8 - 1);
+        code.B(NE, *fallback);
+    }
+    const auto [Xbase, Xoffset] = InlinePageTableEmitVAddrLookup<bitsize>(code, ctx, X1, fallback);
+    code.ADD(X3, Xbase, Xoffset);
+
+    // The reservation must still be this address; it is used up either way.
+    code.MOV(X4, std::bit_cast<u64>(GetExclusiveMonitorAddressPointer(ctx.conf.global_monitor, ctx.conf.processor_id)));
+    code.LDR(X5, X4);
+    code.CMP(X5, X1);
+    code.B(NE, *end);
+    code.MOV(X5, invalid_exclusive_address);
+    code.STR(X5, X4);
+
+    code.MOV(X4, std::bit_cast<u64>(GetExclusiveMonitorValuePointer(ctx.conf.global_monitor, ctx.conf.processor_id)));
+    code.l(retry);
+    switch (bitsize) {
+    case 8:
+        code.LDRB(W5, X4);
+        code.LDAXRB(W6, X3);
+        code.CMP(W6, W5);
+        code.B(NE, mismatch);
+        code.STLXRB(W7, W2, X3);
+        break;
+    case 16:
+        code.LDRH(W5, X4);
+        code.LDAXRH(W6, X3);
+        code.CMP(W6, W5);
+        code.B(NE, mismatch);
+        code.STLXRH(W7, W2, X3);
+        break;
+    case 32:
+        code.LDR(W5, X4);
+        code.LDAXR(W6, X3);
+        code.CMP(W6, W5);
+        code.B(NE, mismatch);
+        code.STLXR(W7, W2, X3);
+        break;
+    case 64:
+        code.LDR(X5, X4);
+        code.LDAXR(X6, X3);
+        code.CMP(X6, X5);
+        code.B(NE, mismatch);
+        code.STLXR(W7, X2, X3);
+        break;
+    default:
+        UNREACHABLE();
+    }
+    code.CBNZ(W7, retry);
+    code.MOV(W0, 0);
+    code.B(*end);
+    code.l(mismatch);
+    code.CLREX();
+
+    code.l(*end);
+    if (ordered) {
+        code.DMB(oaknut::BarrierOp::ISH);
+    }
+
+    ctx.deferred_emits.emplace_back([&code, &ctx, fallback, end] {
+        code.l(*fallback);
+        EmitRelocation(code, ctx, ExclusiveWriteMemoryLinkTarget(bitsize));
+        code.B(*end);
+    });
+
+    ctx.reg_alloc.DefineAsRegister(inst, X0);
+}
+
 std::optional<DoNotFastmemMarker> ShouldFastmem(EmitContext& ctx, IR::Inst* inst) {
     if (!ctx.conf.fastmem_pointer || !ctx.fastmem.SupportsFastmem()) {
         return std::nullopt;
@@ -655,7 +788,11 @@ void EmitReadMemory(oaknut::CodeGenerator& code, EmitContext& ctx, IR::Inst* ins
 
 template<std::size_t bitsize>
 void EmitExclusiveReadMemory(oaknut::CodeGenerator& code, EmitContext& ctx, IR::Inst* inst) {
-    CallbackOnlyEmitExclusiveReadMemory<bitsize>(code, ctx, inst);
+    if (ShouldInlineExclusive(ctx, bitsize)) {
+        InlinePageTableEmitExclusiveReadMemory<bitsize>(code, ctx, inst);
+    } else {
+        CallbackOnlyEmitExclusiveReadMemory<bitsize>(code, ctx, inst);
+    }
 }
 
 template<std::size_t bitsize>
@@ -671,7 +808,11 @@ void EmitWriteMemory(oaknut::CodeGenerator& code, EmitContext& ctx, IR::Inst* in
 
 template<std::size_t bitsize>
 void EmitExclusiveWriteMemory(oaknut::CodeGenerator& code, EmitContext& ctx, IR::Inst* inst) {
-    CallbackOnlyEmitExclusiveWriteMemory<bitsize>(code, ctx, inst);
+    if (ShouldInlineExclusive(ctx, bitsize)) {
+        InlinePageTableEmitExclusiveWriteMemory<bitsize>(code, ctx, inst);
+    } else {
+        CallbackOnlyEmitExclusiveWriteMemory<bitsize>(code, ctx, inst);
+    }
 }
 
 template void EmitReadMemory<8>(oaknut::CodeGenerator& code, EmitContext& ctx, IR::Inst* inst);

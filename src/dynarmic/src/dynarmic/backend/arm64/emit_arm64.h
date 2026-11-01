@@ -26,6 +26,10 @@ struct CodeGenerator;
 struct Label;
 }  // namespace oaknut
 
+namespace Dynarmic {
+class ExclusiveMonitor;
+}  // namespace Dynarmic
+
 namespace Dynarmic::FP {
 class FPCR;
 }  // namespace Dynarmic::FP
@@ -124,6 +128,10 @@ struct EmitConfig {
 
     // Memory
     bool check_halt_on_memory_access;
+
+    // Exclusive monitor (inline exclusive accesses use this processor's slots directly)
+    ExclusiveMonitor* global_monitor;
+    std::size_t processor_id;
 
     // Page table
     u64 page_table_pointer;

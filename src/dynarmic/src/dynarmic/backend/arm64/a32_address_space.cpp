@@ -405,6 +405,10 @@ EmitConfig A32AddressSpace::GetEmitConfig() {
 
         .check_halt_on_memory_access = conf.check_halt_on_memory_access,
 
+        // A32 exclusives always go through the monitor's callbacks.
+        .global_monitor = nullptr,
+        .processor_id = 0,
+
         .page_table_pointer = std::bit_cast<u64>(conf.page_table),
         .page_table_address_space_bits = 32,
         .page_table_pointer_mask = conf.page_table_pointer_mask,
