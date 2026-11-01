@@ -27,6 +27,7 @@
 #include "core/debugger/debugger.h"
 #include "core/device_memory.h"
 #include "core/file_sys/fs_filesystem.h"
+#include "core/file_sys/nup_container.h"
 #include "core/file_sys/patch_manager.h"
 #include "core/file_sys/program_metadata.h"
 #include "core/file_sys/registered_cache.h"
@@ -129,7 +130,21 @@ bool IsSwitch2Program(const FileSys::VirtualFile& file) {
     const auto extension =
         Common::ToLower(std::string(Common::FS::GetExtensionFromFilename(file->GetName())));
 
-    if (extension == "edenpack") {
+    if (FileSys::NupContainer::IsNupFile(file)) {
+        FileSys::NupContainer nup{file};
+        if (nup.GetStatus() != Loader::ResultStatus::Success) {
+            return false;
+        }
+        std::optional<std::size_t> program;
+        if (const auto base = nup.FindBasePackage();
+            base && nup.GetExeFSDir(*base) != nullptr) {
+            program = base;
+        } else if (const auto update = nup.FindBestUpdatePackage();
+                   update && nup.GetExeFSDir(*update) != nullptr) {
+            program = update;
+        }
+        npdm = program ? nup.GetExeFSDir(*program)->GetFile("main.npdm") : nullptr;
+    } else if (extension == "edenpack") {
         const auto root = FileSys::EdenPackVfsFilesystem::Open(file);
         const auto exefs = root ? root->GetSubdirectory("ExeFS") : nullptr;
         npdm = exefs ? exefs->GetFile("main.npdm") : nullptr;
