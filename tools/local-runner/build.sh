@@ -24,6 +24,7 @@ common=(
     -DENABLE_UPDATE_CHECKER=OFF
     -DUSE_DISCORD_PRESENCE=OFF
     -DUSE_CCACHE=ON
+    -DENABLE_WERROR=OFF
 )
 
 # Eden's clang profile (https://github.com/Eden-CI/PGO), with the flags Eden's CI uses.
