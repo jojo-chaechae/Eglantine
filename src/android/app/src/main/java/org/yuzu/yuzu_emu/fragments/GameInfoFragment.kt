@@ -154,15 +154,24 @@ class GameInfoFragment : Fragment() {
             val dumpRoot = NativeLibrary.edenPackDumpRoot(args.game.path)
             buttonConvertEdenpack.setVisible(dumpRoot != null)
             buttonConvertEdenpack.setOnClickListener {
-                dumpRoot?.let { confirmEdenPackConversion(it) }
+                dumpRoot?.let { confirmConversion(it, nup = false) }
+            }
+            buttonConvertNup.setVisible(dumpRoot != null)
+            buttonConvertNup.setOnClickListener {
+                dumpRoot?.let { confirmConversion(it, nup = true) }
             }
         }
 
         setInsets()
     }
 
-    private fun confirmEdenPackConversion(root: String) {
-        val target = NativeLibrary.edenPackTargetPath(root)
+    // EdenPack keeps the exefs/romfs the dump boots with; NUP keeps every package in the dump.
+    private fun confirmConversion(root: String, nup: Boolean) {
+        val target = if (nup) {
+            NativeLibrary.nupTargetPath(root)
+        } else {
+            NativeLibrary.edenPackTargetPath(root)
+        }
         if (File(target).exists()) {
             MessageDialogFragment.newInstance(
                 requireActivity(),
@@ -171,20 +180,30 @@ class GameInfoFragment : Fragment() {
             ).show(parentFragmentManager, MessageDialogFragment.TAG)
             return
         }
-        if (NativeLibrary.edenPackHasJournal(target)) {
+        val hasJournal = if (nup) {
+            NativeLibrary.nupHasJournal(target)
+        } else {
+            NativeLibrary.edenPackHasJournal(target)
+        }
+        if (hasJournal) {
             MaterialAlertDialogBuilder(requireContext())
                 .setTitle(R.string.edenpack_resume_title)
                 .setMessage(getString(R.string.edenpack_resume_description, target))
                 .setPositiveButton(R.string.edenpack_resume) { _, _ ->
-                    convertToEdenPack(root, target, true)
+                    convert(root, target, true, nup)
                 }
                 .setNegativeButton(android.R.string.cancel, null)
                 .show()
             return
         }
 
-        // The pack holds the chosen exefs and romfs, which sit together under the update or base.
-        val contentRoot = File(args.game.path).parentFile?.parentFile ?: return
+        // An EdenPack holds the chosen exefs and romfs, which sit together under the update or
+        // base. A NUP holds the whole dump.
+        val contentRoot = if (nup) {
+            File(root)
+        } else {
+            File(args.game.path).parentFile?.parentFile ?: return
+        }
         viewLifecycleOwner.lifecycleScope.launch {
             val needed = withContext(Dispatchers.IO) {
                 contentRoot.walkTopDown().filter { it.isFile }.sumOf { it.length() }
@@ -205,38 +224,44 @@ class GameInfoFragment : Fragment() {
                 isChecked = free < needed
             }
             MaterialAlertDialogBuilder(context)
-                .setTitle(R.string.edenpack_convert)
+                .setTitle(if (nup) R.string.nup_convert else R.string.edenpack_convert)
                 .setMessage(message)
                 .setView(lowStorage)
-                .setPositiveButton(R.string.edenpack_convert) { _, _ ->
-                    convertToEdenPack(root, target, lowStorage.isChecked)
+                .setPositiveButton(if (nup) R.string.nup_convert else R.string.edenpack_convert) {
+                        _, _ ->
+                    convert(root, target, lowStorage.isChecked, nup)
                 }
                 .setNegativeButton(android.R.string.cancel, null)
                 .show()
         }
     }
 
-    private fun convertToEdenPack(root: String, target: String, deleteSources: Boolean) {
+    private fun convert(root: String, target: String, deleteSources: Boolean, nup: Boolean) {
         val context = requireContext().applicationContext
         val mib = 1024L * 1024L
         val dialog = ProgressDialogFragment.newInstance(
             requireActivity(),
-            R.string.edenpack_converting,
+            if (nup) R.string.nup_converting else R.string.edenpack_converting,
             true
         ) { progressCallback, messageCallback ->
-            val result = EdenPackResult.from(
-                NativeLibrary.convertToEdenPack(root, target, deleteSources) {
-                        bytesTotal, bytesDone, filesTotal, filesDone ->
-                    messageCallback(
-                        context.getString(
-                            R.string.edenpack_progress,
-                            bytesDone / mib,
-                            bytesTotal / mib,
-                            filesDone,
-                            filesTotal
-                        )
+            val onProgress = { bytesTotal: Long, bytesDone: Long, filesTotal: Long,
+                    filesDone: Long ->
+                messageCallback(
+                    context.getString(
+                        R.string.edenpack_progress,
+                        bytesDone / mib,
+                        bytesTotal / mib,
+                        filesDone,
+                        filesTotal
                     )
-                    progressCallback(bytesTotal, bytesDone)
+                )
+                progressCallback(bytesTotal, bytesDone)
+            }
+            val result = EdenPackResult.from(
+                if (nup) {
+                    NativeLibrary.convertToNup(root, target, deleteSources, onProgress)
+                } else {
+                    NativeLibrary.convertToEdenPack(root, target, deleteSources, onProgress)
                 }
             )
             when (result) {
@@ -254,8 +279,12 @@ class GameInfoFragment : Fragment() {
 
                 EdenPackResult.Cancelled -> if (deleteSources) {
                     MessageDialogFragment.newInstance(
-                        titleId = R.string.edenpack_convert,
-                        descriptionId = R.string.edenpack_cancelled_resumable
+                        titleId = if (nup) R.string.nup_convert else R.string.edenpack_convert,
+                        descriptionId = if (nup) {
+                            R.string.nup_cancelled_resumable
+                        } else {
+                            R.string.edenpack_cancelled_resumable
+                        }
                     )
                 } else {
                     Unit

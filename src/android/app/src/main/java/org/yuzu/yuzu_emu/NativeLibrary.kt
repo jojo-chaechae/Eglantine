@@ -636,6 +636,24 @@ object NativeLibrary {
         callback: (bytesTotal: Long, bytesDone: Long, filesTotal: Long, filesDone: Long) -> Boolean
     ): Int
 
+    external fun nupTargetPath(root: String): String
+
+    /** True when an interrupted low-storage conversion to [target] can be resumed. */
+    external fun nupHasJournal(target: String): Boolean
+
+    /**
+     * Packs every package of the loose dump at [root] (base, updates, DLC) into the NUP file
+     * [target]. Blocking; [callback] returns true to cancel. Errors are read with
+     * [edenPackLastError].
+     * @return Ordinal of [EdenPackResult]
+     */
+    external fun convertToNup(
+        root: String,
+        target: String,
+        deleteSources: Boolean,
+        callback: (bytesTotal: Long, bytesDone: Long, filesTotal: Long, filesDone: Long) -> Boolean
+    ): Int
+
     /**
      * Verifies the contents of a game
      * @param path String path to a game

@@ -13,6 +13,8 @@
 #include <codecvt>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>
+#include <functional>
 #include <locale>
 #include <map>
 #include <set>
@@ -64,6 +66,7 @@ extern "C" {
 #include "core/file_sys/content_archive.h"
 #include "core/file_sys/control_metadata.h"
 #include "core/file_sys/edenpack_writer.h"
+#include "core/file_sys/nup_writer.h"
 #include "core/file_sys/fs_filesystem.h"
 #include "core/file_sys/romfs.h"
 #include "core/file_sys/nca_metadata.h"
@@ -1656,10 +1659,15 @@ jstring Java_org_yuzu_yuzu_1emu_NativeLibrary_edenPackLastError(JNIEnv* env, job
     return Common::Android::ToJString(env, edenpack_last_error);
 }
 
-jint Java_org_yuzu_yuzu_1emu_NativeLibrary_convertToEdenPack(JNIEnv* env, jobject, jstring jroot,
-                                                             jstring jtarget,
-                                                             jboolean jdelete_sources,
-                                                             jobject jcallback) {
+// Runs an EdenPack or NUP conversion, reporting progress to a Kotlin
+// (bytesTotal, bytesDone, filesTotal, filesDone) -> Boolean callback that returns true to cancel.
+using PackProgressCallback = std::function<void(const FileSys::EdenPack::PackProgress&)>;
+using PackFunction = std::function<FileSys::EdenPack::PackResult(
+    const std::filesystem::path& root, const std::filesystem::path& target, bool delete_sources,
+    const PackProgressCallback& progress, const std::atomic_bool* cancel, std::string* error)>;
+
+static jint ConvertDump(JNIEnv* env, jstring jroot, jstring jtarget, jboolean jdelete_sources,
+                        jobject jcallback, const PackFunction& pack) {
     const auto lambda_class = env->GetObjectClass(jcallback);
     const auto invoke = env->GetMethodID(lambda_class, "invoke",
                                          "(Ljava/lang/Object;Ljava/lang/Object;Ljava/lang/Object;"
@@ -1668,7 +1676,7 @@ jint Java_org_yuzu_yuzu_1emu_NativeLibrary_convertToEdenPack(JNIEnv* env, jobjec
     auto last_report = std::chrono::steady_clock::time_point{};
 
     // Small-file trees report once per file, so updates are limited to a few per second.
-    const auto progress = [&](const FileSys::EdenPack::PackProgress& p) {
+    const PackProgressCallback progress = [&](const FileSys::EdenPack::PackProgress& p) {
         const auto now = std::chrono::steady_clock::now();
         if (now - last_report < std::chrono::milliseconds(100) && p.bytes_done != p.bytes_total) {
             return;
@@ -1688,12 +1696,46 @@ jint Java_org_yuzu_yuzu_1emu_NativeLibrary_convertToEdenPack(JNIEnv* env, jobjec
     };
 
     edenpack_last_error.clear();
-    const FileSys::EdenPack::PackOptions options{.delete_sources = jdelete_sources != JNI_FALSE};
-    const auto result = FileSys::EdenPack::PackDump(
-        Common::Android::GetJString(env, jroot), Common::Android::GetJString(env, jtarget),
-        options, progress, &cancel, &edenpack_last_error);
+    const auto result =
+        pack(Common::Android::GetJString(env, jroot), Common::Android::GetJString(env, jtarget),
+             jdelete_sources != JNI_FALSE, progress, &cancel, &edenpack_last_error);
     env->DeleteLocalRef(lambda_class);
     return static_cast<jint>(result);
+}
+
+jint Java_org_yuzu_yuzu_1emu_NativeLibrary_convertToEdenPack(JNIEnv* env, jobject, jstring jroot,
+                                                             jstring jtarget,
+                                                             jboolean jdelete_sources,
+                                                             jobject jcallback) {
+    return ConvertDump(env, jroot, jtarget, jdelete_sources, jcallback,
+                       [](const auto& root, const auto& target, bool delete_sources,
+                          const auto& progress, const auto* cancel, std::string* error) {
+                           return FileSys::EdenPack::PackDump(
+                               root, target, {.delete_sources = delete_sources}, progress, cancel,
+                               error);
+                       });
+}
+
+jstring Java_org_yuzu_yuzu_1emu_NativeLibrary_nupTargetPath(JNIEnv* env, jobject, jstring jroot) {
+    const auto target = FileSys::Nup::DefaultArchivePath(Common::Android::GetJString(env, jroot));
+    return Common::Android::ToJString(env, Common::FS::PathToUTF8String(target));
+}
+
+jboolean Java_org_yuzu_yuzu_1emu_NativeLibrary_nupHasJournal(JNIEnv* env, jobject,
+                                                             jstring jtarget) {
+    return FileSys::Nup::HasResumableJournal(Common::Android::GetJString(env, jtarget));
+}
+
+jint Java_org_yuzu_yuzu_1emu_NativeLibrary_convertToNup(JNIEnv* env, jobject, jstring jroot,
+                                                        jstring jtarget, jboolean jdelete_sources,
+                                                        jobject jcallback) {
+    return ConvertDump(env, jroot, jtarget, jdelete_sources, jcallback,
+                       [](const auto& root, const auto& target, bool delete_sources,
+                          const auto& progress, const auto* cancel, std::string* error) {
+                           return FileSys::Nup::PackDump(root, target,
+                                                         {.delete_sources = delete_sources},
+                                                         progress, cancel, error);
+                       });
 }
 
 jint Java_org_yuzu_yuzu_1emu_NativeLibrary_verifyGameContents(JNIEnv* env, jobject jobj,

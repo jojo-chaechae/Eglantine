@@ -946,6 +946,9 @@
     <string name="edenpack_done_low_storage_description">The game now loads from %1$s. The packed original files were removed.</string>
     <string name="edenpack_cancelled_resumable">Conversion paused. Choose Convert to EdenPack again to resume it.</string>
     <string name="edenpack_failed">Conversion failed</string>
+    <string name="nup_convert">Convert to NUP</string>
+    <string name="nup_converting">Converting to NUP…</string>
+    <string name="nup_cancelled_resumable">Conversion paused. Choose Convert to NUP again to resume it.</string>
     <string name="verify_success">Integrity verification succeeded!</string>
     <string name="verify_failure">Integrity verification failed!</string>
     <string name="verify_failure_description">File contents may be corrupt</string>
