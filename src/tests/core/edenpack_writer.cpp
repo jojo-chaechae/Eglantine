@@ -211,6 +211,7 @@ TEST_CASE("EdenPack finds the dump root from a main executable", "[edenpack]") {
     using FileSys::EdenPack::DumpRootFromMain;
     REQUIRE(DumpRootFromMain(root / "base/exefs/main") == root);
     REQUIRE(DumpRootFromMain(root / "updates/65536/exefs/main") == root);
+    REQUIRE(DumpRootFromMain(root / "base/exefs") == root);
     REQUIRE_FALSE(DumpRootFromMain(root / "dlc/x.bin"));
     REQUIRE(FileSys::EdenPack::DefaultArchivePath(root) == t.path / "Game.edenpack");
 }

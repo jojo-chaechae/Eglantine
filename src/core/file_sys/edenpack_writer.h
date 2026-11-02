@@ -22,7 +22,8 @@ struct DumpSource {
 // exefs/romfs at the root. Folder names are matched case-insensitively.
 std::optional<DumpSource> ResolveDumpSource(const std::filesystem::path& dump_root);
 bool IsLooseDump(const std::filesystem::path& dir);
-// The dump folder a game list entry's exefs/main belongs to, if it is a loose dump.
+// The dump folder a game list entry's exefs/main (or exefs folder) belongs to, if it is a loose
+// dump.
 std::optional<std::filesystem::path> DumpRootFromMain(const std::filesystem::path& main);
 std::filesystem::path DefaultArchivePath(const std::filesystem::path& dump_root);
 

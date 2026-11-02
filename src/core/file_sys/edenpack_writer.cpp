@@ -575,7 +575,9 @@ bool IsLooseDump(const fs::path& dir) {
 }
 
 std::optional<fs::path> DumpRootFromMain(const fs::path& main) {
-    const auto exefs = main.parent_path();
+    // The Qt game list stores the exefs folder rather than exefs/main.
+    std::error_code ec;
+    const auto exefs = fs::is_directory(main, ec) ? main : main.parent_path();
     if (Lower(ToUtf8(exefs.filename())) != "exefs") {
         return std::nullopt;
     }
