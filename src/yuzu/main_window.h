@@ -21,6 +21,7 @@
 #include "common/common_types.h"
 #include "common/settings_enums.h"
 #include "core/file_sys/edenpack_writer.h"
+#include "core/file_sys/nup_writer.h"
 #include "frontend_common/content_manager.h"
 #include "input_common/drivers/tas_input.h"
 #include "qt_common/config/qt_config.h"
@@ -355,6 +356,8 @@ private slots:
     void OnGameListDumpRomFS(u64 program_id, const std::string& game_path, DumpRomFSTarget target);
     void OnGameListVerifyIntegrity(const std::string& game_path);
     void OnGameListConvertToEdenPack(const std::string& game_path);
+    void OnGameListConvertToNup(const std::string& game_path);
+    void ConvertDump(const std::string& game_path, bool nup);
     void OnGameListCopyTID(u64 program_id);
     void OnGameListCreateShortcut(u64 program_id, const std::string& game_path,
                                   const QtCommon::Game::ShortcutTarget target);

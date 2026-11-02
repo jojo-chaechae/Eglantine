@@ -1469,6 +1469,8 @@ void MainWindow::ConnectWidgetEvents() {
     connect(game_list, &GameList::CreateShortcut, this, &MainWindow::OnGameListCreateShortcut);
     connect(game_list, &GameList::ConvertToEdenPackRequested, this,
             &MainWindow::OnGameListConvertToEdenPack);
+    connect(game_list, &GameList::ConvertToNupRequested, this,
+            &MainWindow::OnGameListConvertToNup);
     connect(game_list, &GameList::AddDirectory, this, &MainWindow::OnGameListAddDirectory);
     connect(game_list_placeholder, &GameListPlaceholder::AddDirectory, this,
             &MainWindow::OnGameListAddDirectory);
@@ -3983,21 +3985,34 @@ void MainWindow::OnGameListRefresh() {
 }
 
 void MainWindow::OnGameListConvertToEdenPack(const std::string& game_path) {
+    ConvertDump(game_path, false);
+}
+
+void MainWindow::OnGameListConvertToNup(const std::string& game_path) {
+    ConvertDump(game_path, true);
+}
+
+// EdenPack keeps the ExeFS/RomFS the dump boots with; NUP keeps every package in the dump.
+void MainWindow::ConvertDump(const std::string& game_path, bool nup) {
     if (edenpack_running)
         return;
 
     const auto root = FileSys::EdenPack::DumpRootFromMain(game_path);
     if (!root)
         return;
-    const auto archive = FileSys::EdenPack::DefaultArchivePath(*root);
+    const QString format = nup ? tr("NUP") : tr("EdenPack");
+    const QString convert_title = tr("Convert to %1").arg(format);
+    const auto archive = nup ? FileSys::Nup::DefaultArchivePath(*root)
+                             : FileSys::EdenPack::DefaultArchivePath(*root);
     if (std::filesystem::exists(archive)) {
-        QMessageBox::information(this, tr("Convert to EdenPack"),
+        QMessageBox::information(this, convert_title,
                                  tr("The target archive already exists:\n%1")
                                      .arg(QString::fromStdString(Common::FS::PathToUTF8String(archive))));
         return;
     }
 
-    const bool resume = FileSys::EdenPack::HasResumableJournal(archive);
+    const bool resume = nup ? FileSys::Nup::HasResumableJournal(archive)
+                            : FileSys::EdenPack::HasResumableJournal(archive);
     bool delete_sources = resume;
     if (resume) {
         if (QMessageBox::question(this, tr("Resume Conversion"),
@@ -4007,21 +4022,25 @@ void MainWindow::OnGameListConvertToEdenPack(const std::string& game_path) {
     } else {
         QCheckBox low_storage(tr("Low storage: delete the original files as they are packed "
                                  "(cannot be undone)"));
-        QMessageBox prompt(QMessageBox::Question, tr("Convert to EdenPack"),
+        QMessageBox prompt(QMessageBox::Question, convert_title,
                            tr("Source folder:\n%1\n\nTarget archive:\n%2")
                                .arg(QString::fromStdString(Common::FS::PathToUTF8String(*root)),
                                     QString::fromStdString(Common::FS::PathToUTF8String(archive))),
                            QMessageBox::Yes | QMessageBox::No, this);
         prompt.setCheckBox(&low_storage);
         u64 needed{};
-        if (const auto source = FileSys::EdenPack::ResolveDumpSource(*root)) {
-            for (const auto& directory : {source->exefs, source->romfs}) {
-                std::error_code ec;
-                for (std::filesystem::recursive_directory_iterator it(directory, ec), end;
-                     !ec && it != end; it.increment(ec)) {
-                    if (it->is_regular_file(ec))
-                        needed += it->file_size(ec);
-                }
+        std::vector<std::filesystem::path> packed_directories{*root};
+        if (!nup) {
+            packed_directories.clear();
+            if (const auto source = FileSys::EdenPack::ResolveDumpSource(*root))
+                packed_directories = {source->exefs, source->romfs};
+        }
+        for (const auto& directory : packed_directories) {
+            std::error_code ec;
+            for (std::filesystem::recursive_directory_iterator it(directory, ec), end;
+                 !ec && it != end; it.increment(ec)) {
+                if (it->is_regular_file(ec))
+                    needed += it->file_size(ec);
             }
         }
         std::error_code space_error;
@@ -4047,7 +4066,7 @@ void MainWindow::OnGameListConvertToEdenPack(const std::string& game_path) {
     edenpack_cancel = std::make_shared<std::atomic_bool>(false);
     edenpack_progress =
         new QProgressDialog(tr("Preparing conversion..."), tr("Cancel"), 0, 1000, this);
-    edenpack_progress->setWindowTitle(tr("Converting to EdenPack"));
+    edenpack_progress->setWindowTitle(tr("Converting to %1").arg(format));
     edenpack_progress->setMinimumDuration(0);
     edenpack_progress->setAutoClose(false);
     edenpack_progress->setAutoReset(false);
@@ -4058,11 +4077,10 @@ void MainWindow::OnGameListConvertToEdenPack(const std::string& game_path) {
     const auto cancel = edenpack_cancel;
     auto last_update = std::make_shared<std::chrono::steady_clock::time_point>();
     edenpack_watcher.setFuture(QtConcurrent::run([this, root = *root, archive, delete_sources,
-                                                  cancel, last_update] {
+                                                  cancel, last_update, nup, format] {
         std::string error;
-        const auto result = FileSys::EdenPack::PackDump(
-            root, archive, {.delete_sources = delete_sources},
-            [this, last_update](const FileSys::EdenPack::PackProgress& progress) {
+        const auto on_progress = [this, last_update](
+                                     const FileSys::EdenPack::PackProgress& progress) {
                 const auto now = std::chrono::steady_clock::now();
                 if (now - *last_update < std::chrono::milliseconds(200))
                     return;
@@ -4085,11 +4103,15 @@ void MainWindow::OnGameListConvertToEdenPack(const std::string& game_path) {
                                 .arg(progress.files_total));
                     },
                     Qt::QueuedConnection);
-            },
-            cancel.get(), &error);
+        };
+        const auto result =
+            nup ? FileSys::Nup::PackDump(root, archive, {.delete_sources = delete_sources},
+                                         on_progress, cancel.get(), &error)
+                : FileSys::EdenPack::PackDump(root, archive, {.delete_sources = delete_sources},
+                                              on_progress, cancel.get(), &error);
         QMetaObject::invokeMethod(
             this,
-            [this, result, delete_sources, error] {
+            [this, result, delete_sources, error, format] {
                 edenpack_running = false;
                 edenpack_source_path.clear();
                 game_list->SetEdenPackConversionRunning(false);
@@ -4103,17 +4125,20 @@ void MainWindow::OnGameListConvertToEdenPack(const std::string& game_path) {
                 case FileSys::EdenPack::PackResult::Success:
                     QMessageBox::information(
                         this, tr("Conversion Complete"),
-                        delete_sources ? tr("The EdenPack was created and the loose folder was "
+                        delete_sources ? tr("The %1 was created and the loose folder was "
                                             "removed.")
-                                       : tr("The EdenPack was created. You can delete the loose "
-                                            "folder if you no longer need it."));
+                                             .arg(format)
+                                       : tr("The %1 was created. You can delete the loose "
+                                            "folder if you no longer need it.")
+                                             .arg(format));
                     OnGameListRefresh();
                     break;
                 case FileSys::EdenPack::PackResult::Cancelled:
                     if (delete_sources)
                         QMessageBox::information(this, tr("Conversion Cancelled"),
                                                  tr("The conversion can be resumed by choosing "
-                                                    "Convert to EdenPack again."));
+                                                    "Convert to %1 again.")
+                                                     .arg(format));
                     break;
                 case FileSys::EdenPack::PackResult::InvalidSource:
                 case FileSys::EdenPack::PackResult::IoError:

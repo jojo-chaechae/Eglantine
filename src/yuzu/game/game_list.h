@@ -108,6 +108,7 @@ signals:
     void DumpRomFSRequested(u64 program_id, const std::string& game_path, DumpRomFSTarget target);
     void VerifyIntegrityRequested(const std::string& game_path);
     void ConvertToEdenPackRequested(const std::string& game_path);
+    void ConvertToNupRequested(const std::string& game_path);
     void CopyTIDRequested(u64 program_id);
     void CreateShortcut(u64 program_id, const std::string& game_path,
                         const QtCommon::Game::ShortcutTarget target);

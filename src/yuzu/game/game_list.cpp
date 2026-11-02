@@ -487,9 +487,12 @@ void GameList::AddGamePopup(QMenu& context_menu, u64 program_id, const std::stri
     QAction* verify_integrity = context_menu.addAction(tr("Verify Integrity"));
     QAction* copy_tid = context_menu.addAction(tr("Copy Title ID to Clipboard"));
     QAction* convert_edenpack = nullptr;
+    QAction* convert_nup = nullptr;
     if (FileSys::EdenPack::DumpRootFromMain(path)) {
         convert_edenpack = context_menu.addAction(tr("Convert to EdenPack..."));
         convert_edenpack->setEnabled(!edenpack_conversion_running);
+        convert_nup = context_menu.addAction(tr("Convert to NUP..."));
+        convert_nup->setEnabled(!edenpack_conversion_running);
     }
 #if !defined(__APPLE__)
     QMenu* shortcut_menu = context_menu.addMenu(tr("Create Shortcut"));
@@ -574,6 +577,10 @@ void GameList::AddGamePopup(QMenu& context_menu, u64 program_id, const std::stri
     if (convert_edenpack) {
         connect(convert_edenpack, &QAction::triggered, this,
                 [this, path]() { emit ConvertToEdenPackRequested(path); });
+    }
+    if (convert_nup) {
+        connect(convert_nup, &QAction::triggered, this,
+                [this, path]() { emit ConvertToNupRequested(path); });
     }
 #if !defined(__APPLE__)
     connect(create_desktop_shortcut, &QAction::triggered, this, [this, program_id, path]() {
