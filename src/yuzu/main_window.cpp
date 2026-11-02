@@ -4020,14 +4020,15 @@ void MainWindow::ConvertDump(const std::string& game_path, bool nup) {
                                   QMessageBox::Yes | QMessageBox::No) != QMessageBox::Yes)
             return;
     } else {
-        QCheckBox low_storage(tr("Low storage: delete the original files as they are packed "
-                                 "(cannot be undone)"));
         QMessageBox prompt(QMessageBox::Question, convert_title,
                            tr("Source folder:\n%1\n\nTarget archive:\n%2")
                                .arg(QString::fromStdString(Common::FS::PathToUTF8String(*root)),
                                     QString::fromStdString(Common::FS::PathToUTF8String(archive))),
                            QMessageBox::Yes | QMessageBox::No, this);
-        prompt.setCheckBox(&low_storage);
+        // QMessageBox takes ownership of its check box.
+        auto* low_storage = new QCheckBox(tr("Low storage: delete the original files as they "
+                                             "are packed (cannot be undone)"));
+        prompt.setCheckBox(low_storage);
         u64 needed{};
         std::vector<std::filesystem::path> packed_directories{*root};
         if (!nup) {
@@ -4057,7 +4058,7 @@ void MainWindow::ConvertDump(const std::string& game_path, bool nup) {
         }
         if (prompt.exec() != QMessageBox::Yes)
             return;
-        delete_sources = low_storage.isChecked();
+        delete_sources = low_storage->isChecked();
     }
 
     edenpack_running = true;
