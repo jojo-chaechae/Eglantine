@@ -13,6 +13,7 @@
 #include <string>
 #include <vector>
 
+#include <fmt/format.h>
 #include <openssl/evp.h>
 
 #include "core/file_sys/nup_container.h"
@@ -363,4 +364,31 @@ TEST_CASE("NUP rejects overwrite and a dump without NPDM", "[nup]") {
     fs::remove(archive);
     REQUIRE(FileSys::Nup::PackDump(root, archive) == FileSys::Nup::PackResult::InvalidSource);
     REQUIRE_FALSE(fs::exists(archive.string() + ".part"));
+}
+
+// Archives are meant to be byte-identical on every platform. A change to this hash means
+// packing a dump no longer reproduces archives made by earlier builds (for example after a zstd
+// update), so make it deliberately.
+TEST_CASE("NUP output is reproducible", "[nup]") {
+    TempDir t;
+    const auto root = t.path / "Game";
+    MakeDump(root);
+    // Large and compressible, so it covers what used to be zstd's multithreaded path.
+    Put(root / "Base/RomFS/large.bin", [] {
+        std::string data(20 * 1024 * 1024, '\0');
+        u32 x = 1;
+        for (auto& c : data) {
+            x = x * 1664525 + 1013904223;
+            c = static_cast<char>('a' + (x >> 28));
+        }
+        return data;
+    }());
+    const auto archive = t.path / "Game.nup";
+    REQUIRE(FileSys::Nup::PackDump(root, archive) == FileSys::Nup::PackResult::Success);
+
+    std::string hex;
+    for (const u8 b : Sha256(ReadAll(archive))) {
+        hex += fmt::format("{:02x}", b);
+    }
+    REQUIRE(hex == "38a9fc3c64708ea20b62e91974070cbdb98a0938721bae14954a5cd379dbe176");
 }

@@ -14,7 +14,6 @@
 #include <optional>
 #include <span>
 #include <stdexcept>
-#include <thread>
 #include <unordered_map>
 #include <unordered_set>
 #include <vector>
@@ -64,8 +63,6 @@ constexpr int JournalVersion = 1;
 constexpr u64 ProgressStep = 64ULL * 1024 * 1024;
 constexpr size_t MaxChunkFiles = 4096;
 constexpr size_t ReadBufferSize = 4 * 1024 * 1024;
-// Smaller files are compressed on the calling thread; zstd's workers only help with large inputs.
-constexpr u64 MultithreadMinSize = 16ULL * 1024 * 1024;
 
 class PackError : public std::runtime_error {
 public:
@@ -238,14 +235,16 @@ private:
 
 class ZstdContext {
 public:
-    ZstdContext(int level, int workers) : cctx{ZSTD_createCCtx()} {
+    // Archives must be byte-identical across platforms, so compression is always
+    // single-threaded (zstd's multithreaded frames differ) and every frame parameter is set
+    // explicitly instead of relying on library defaults.
+    explicit ZstdContext(int level) : cctx{ZSTD_createCCtx()} {
         if (!cctx || ZSTD_isError(ZSTD_CCtx_setParameter(cctx, ZSTD_c_compressionLevel, level)) ||
-            ZSTD_isError(ZSTD_CCtx_setParameter(cctx, ZSTD_c_contentSizeFlag, 1))) {
+            ZSTD_isError(ZSTD_CCtx_setParameter(cctx, ZSTD_c_nbWorkers, 0)) ||
+            ZSTD_isError(ZSTD_CCtx_setParameter(cctx, ZSTD_c_contentSizeFlag, 1)) ||
+            ZSTD_isError(ZSTD_CCtx_setParameter(cctx, ZSTD_c_checksumFlag, 0)) ||
+            ZSTD_isError(ZSTD_CCtx_setParameter(cctx, ZSTD_c_dictIDFlag, 0))) {
             throw PackError(PackResult::IoError, "cannot initialise zstd");
-        }
-        // Fails on builds of libzstd without threading, which then compress on this thread.
-        if (workers > 0) {
-            ZSTD_CCtx_setParameter(cctx, ZSTD_c_nbWorkers, workers);
         }
     }
     ~ZstdContext() {
@@ -1032,22 +1031,17 @@ private:
         return hash.Final();
     }
 
-    ZstdContext& Compressor(u64 size) {
-        auto& slot = size >= MultithreadMinSize ? zstd_mt : zstd_st;
-        if (!slot) {
-            const int workers = size >= MultithreadMinSize
-                                    ? static_cast<int>(std::clamp(
-                                          std::thread::hardware_concurrency(), 1U, 8U))
-                                    : 0;
-            slot = std::make_unique<ZstdContext>(options.zstd_level, workers);
+    ZstdContext& Compressor() {
+        if (!compressor) {
+            compressor = std::make_unique<ZstdContext>(options.zstd_level);
         }
-        return *slot;
+        return *compressor;
     }
 
     // Streams one zstd frame into the archive. Gives up (returns false) as soon as the output is
     // no smaller than the input.
     bool WriteCompressed(Common::FS::IOFile& in, u64 size, u64& stored) {
-        auto& zstd = Compressor(size);
+        auto& zstd = Compressor();
         zstd.Begin(size);
         out_buffer.resize(ZSTD_CStreamOutSize());
         stored = 0;
@@ -1362,8 +1356,7 @@ private:
     std::vector<u8> buffer;
     std::vector<u8> out_buffer;
     Sha256 hash;
-    std::unique_ptr<ZstdContext> zstd_st;
-    std::unique_ptr<ZstdContext> zstd_mt;
+    std::unique_ptr<ZstdContext> compressor;
     PackProgress progress{};
     u64 last_report = 0;
     u64 file_counted = 0;
