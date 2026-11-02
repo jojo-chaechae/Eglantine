@@ -2837,6 +2837,7 @@ private:
         if (layout.format == Tegra::Host1x::Nx2PictureFormat::Nv12) {
             memory.WriteBlock(address + layout.chroma_offset, bytes.data() + layout.chroma_offset,
                               layout.pitch * ((height + 1) / 2));
+            DumpChroma(memory, address, bytes, layout, width, height);
         }
         // The game samples the image on the GPU: drop the texture cache's copy of the old frame.
         if (const auto device = Nvidia::Devices::Nx2GpuMemoryRegistry::Get().DeviceAddressOf(address)) {
@@ -2866,6 +2867,45 @@ private:
             }
             std::fclose(file);
         }
+    }
+
+    // Diagnostic: the chroma plane as written (U, V) and as read back from guest memory (Ug, Vg).
+    void DumpChroma(Core::Memory::Memory& memory, u64 address, const std::vector<u8>& bytes,
+                    const Nx2DecoderImageLayout& layout, u32 width, u32 height) {
+        static const char* const directory = std::getenv("EDEN_NX2_VDEC_DUMP");
+        if (directory == nullptr || (m_frames_out % 120) != 0) {
+            return;
+        }
+        const u32 w = width / 4;
+        const u32 h = height / 4;
+        std::vector<u8> guest(layout.pitch * ((height + 1) / 2));
+        memory.ReadBlock(address + layout.chroma_offset, guest.data(), guest.size());
+        u64 written_sum{}, guest_sum{};
+        for (u64 i = 0; i < guest.size(); ++i) {
+            written_sum += bytes[layout.chroma_offset + i];
+            guest_sum += guest[i];
+        }
+        LOG_INFO(Service, "nx2 vdec chroma: frame {} address {:#x} offset {:#x} pitch {:#x} "
+                 "written mean {} guest mean {}", m_frames_out + 1, address, layout.chroma_offset,
+                 layout.pitch, written_sum / std::max<u64>(guest.size(), 1),
+                 guest_sum / std::max<u64>(guest.size(), 1));
+        const auto save = [&](const char* name, const u8* plane, u32 component) {
+            const std::string path =
+                fmt::format("{}/nx2-vdec-{:05}-{}.pgm", directory, m_frames_out + 1, name);
+            if (std::FILE* file = std::fopen(path.c_str(), "wb")) {
+                std::fprintf(file, "P5 %u %u 255\n", w, h / 2);
+                for (u32 y = 0; y < h / 2; ++y) {
+                    for (u32 x = 0; x < w; ++x) {
+                        std::fputc(plane[y * 4 * layout.pitch + x * 4 + component], file);
+                    }
+                }
+                std::fclose(file);
+            }
+        };
+        save("u", bytes.data() + layout.chroma_offset, 0);
+        save("v", bytes.data() + layout.chroma_offset, 1);
+        save("ug", guest.data(), 0);
+        save("vg", guest.data(), 1);
     }
 
     struct ReadyState {
