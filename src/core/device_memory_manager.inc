@@ -5,6 +5,9 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <atomic>
+#include <cstdlib>
+#include <cstring>
+#include <string>
 #include <limits>
 #include <memory>
 #include <type_traits>
@@ -23,6 +26,7 @@
 #include "core/device_memory.h"
 #include "core/device_memory_manager.h"
 #include "core/memory.h"
+#include "video_core/nx2.h"
 
 namespace Core {
 
@@ -507,8 +511,52 @@ void DeviceMemoryManager<Traits>::ReadBlock(DAddr address, void* dest_pointer, s
         });
 }
 
+
+namespace {
+// EDEN_NX2_CMD_WRITES=1 (diagnostic): log device writes that change words of pages holding
+// submitted command lists.
+template <typename Manager>
+void Nx2LogCommandPageWrite(Manager& manager, const char* what, DAddr address, const void* src,
+                            size_t size) {
+    static const bool enabled = std::getenv("EDEN_NX2_CMD_WRITES") != nullptr;
+    if (!enabled || size < 4 || !Tegra::Nx2TouchesSubmittedPage(address, size)) {
+        return;
+    }
+    static std::atomic<u32> logged{};
+    if (logged.load(std::memory_order_relaxed) >= 400) {
+        return;
+    }
+    const size_t words = (std::min<size_t>)(size, 0x4000) / 4;
+    std::vector<u32> old_words(words);
+    std::vector<u32> new_words(words);
+    manager.ReadBlockUnsafe(address, old_words.data(), words * 4);
+    std::memcpy(new_words.data(), src, words * 4);
+    size_t first = words;
+    size_t differing = 0;
+    for (size_t i = 0; i < words; ++i) {
+        if (old_words[i] != new_words[i]) {
+            first = (std::min)(first, i);
+            ++differing;
+        }
+    }
+    if (differing == 0 || logged.fetch_add(1) >= 400) {
+        return;
+    }
+    std::string old_text;
+    std::string new_text;
+    for (size_t i = first; i < (std::min)(words, first + 6); ++i) {
+        old_text += fmt::format(" {:08x}", old_words[i]);
+        new_text += fmt::format(" {:08x}", new_words[i]);
+    }
+    LOG_WARNING(HW_Memory,
+                "{} into command page [{:#x}, +{:#x}) changes {} words from {:#x}: old{} / new{}",
+                what, address, size, differing, address + first * 4, old_text, new_text);
+}
+} // Anonymous namespace
+
 template <typename Traits>
 void DeviceMemoryManager<Traits>::WriteBlock(DAddr address, const void* src_pointer, size_t size) {
+    Nx2LogCommandPageWrite(*this, "WriteBlock", address, src_pointer, size);
     WalkBlock(
         address, size,
         [&](size_t copy_amount, DAddr current_vaddr) {
@@ -575,6 +623,7 @@ void DeviceMemoryManager<Traits>::ReadBlockUnsafe(DAddr address, void* dest_poin
 template <typename Traits>
 void DeviceMemoryManager<Traits>::WriteBlockUnsafe(DAddr address, const void* src_pointer,
                                                    size_t size) {
+    Nx2LogCommandPageWrite(*this, "WriteBlockUnsafe", address, src_pointer, size);
     WalkBlock(
         address, size,
         [&](size_t copy_amount, DAddr current_vaddr) {

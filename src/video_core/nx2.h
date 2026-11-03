@@ -45,6 +45,31 @@ inline void Nx2MarkGpuWritten(u64 device_address, u64 size) {
     }
 }
 
+// EDEN_NX2_CMD_WRITES (diagnostic): device pages that held submitted command lists, so GPU-side
+// writes into them (DeviceMemoryManager) can be logged.
+inline std::array<std::atomic<u64>, (u64{1} << (36 - Nx2WrittenPageBits)) / 64> g_nx2_submitted_pages{};
+
+inline void Nx2MarkSubmittedPage(u64 device_address) {
+    const u64 page = device_address >> Nx2WrittenPageBits;
+    if (page < g_nx2_submitted_pages.size() * 64) {
+        g_nx2_submitted_pages[page / 64].fetch_or(u64{1} << (page % 64), std::memory_order_relaxed);
+    }
+}
+
+[[nodiscard]] inline bool Nx2TouchesSubmittedPage(u64 device_address, u64 size) {
+    if (size == 0) {
+        return false;
+    }
+    const u64 last = std::min<u64>((device_address + size - 1) >> Nx2WrittenPageBits,
+                                   g_nx2_submitted_pages.size() * 64 - 1);
+    for (u64 page = device_address >> Nx2WrittenPageBits; page <= last; ++page) {
+        if ((g_nx2_submitted_pages[page / 64].load(std::memory_order_relaxed) >> (page % 64)) & 1) {
+            return true;
+        }
+    }
+    return false;
+}
+
 // GPU-written device pages the front has read command lists from (same layout as above). The
 // buffer cache copies these pages into host memory right after the compute or copy work that
 // writes them and submits, so the front reads the copy once the GPU is done instead of draining

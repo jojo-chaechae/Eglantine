@@ -25,6 +25,7 @@
 #include "video_core/gpu.h"
 #include "video_core/host1x/host1x.h"
 #include "video_core/memory_manager.h"
+#include "video_core/nx2.h"
 
 namespace Service::Nvidia::Devices {
 namespace {
@@ -458,6 +459,16 @@ NvResult nvhost_gpu::SubmitGPFIFOImpl(IoctlSubmitGpfifo& params, Tegra::CommandL
             size_t offset = 0;
             for (const auto& entry : entries.command_lists) {
                 entries.submitted_offsets.push_back(static_cast<u32>(offset));
+                if (static const bool cmd_writes = std::getenv("EDEN_NX2_CMD_WRITES") != nullptr;
+                    cmd_writes) {
+                    const u64 end = entry.addr + u64{entry.size} * sizeof(u32);
+                    for (u64 page = entry.addr & ~u64{0xfff}; page < end; page += 0x1000) {
+                        if (const auto device =
+                                channel_state->memory_manager->GpuToCpuAddress(page)) {
+                            Tegra::Nx2MarkSubmittedPage(*device);
+                        }
+                    }
+                }
                 channel_state->memory_manager->ReadBlockUnsafe(
                     entry.addr, entries.submitted_words.data() + offset, entry.size * sizeof(u32));
                 offset += entry.size;
