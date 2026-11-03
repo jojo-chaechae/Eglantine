@@ -873,7 +873,9 @@ void DmaPusher::DumpCurrentEntry(const char* reason) {
             for (u64 j = word; j < std::min<u64>(header.size, word + 8); ++j) {
                 const GPUVAddr address = header.addr + j * sizeof(u32);
                 const u32 gpu_value = memory_manager.Read<u32>(address);
-                const u32 cpu_value = system.ApplicationMemory().Read32(address);
+                // Unsafe: a checked read may flush GPU-written pages, which waits on this thread.
+                u32 cpu_value{};
+                system.ApplicationMemory().ReadBlockUnsafe(address, &cpu_value, sizeof(cpu_value));
                 gpu_line += fmt::format(" {:08x}", gpu_value);
                 cpu_line += gpu_value == cpu_value ? std::string(" ........")
                                                    : fmt::format(" {:08x}", cpu_value);
