@@ -482,6 +482,7 @@ private:
             // read the first (see video_core/nx2.h).
             if (last - start + 1 == 0x2000) {
                 Tegra::Nx2AddSemaphoreRegion(start);
+                LOG_INFO(Service, "nx2:gpu semaphore region {:#x} added", start);
                 LOG_DEBUG(Service, "nx2:gpu semaphore page {:#x} mirrored to {:#x}", start + 0x1000,
                          start);
             }
@@ -581,6 +582,7 @@ private:
             }
             if (size == 0x2000) {
                 Tegra::Nx2RemoveSemaphoreRegion(address);
+                LOG_INFO(Service, "nx2:gpu semaphore region {:#x} removed", address);
             }
             m_memory.erase(it);
         } else {
