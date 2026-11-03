@@ -182,7 +182,8 @@ bool DmaPusher::Step() {
                                command_list.snapshot_suspensions ==
                                    suspensions.load(std::memory_order_acquire) &&
                                !IsGpuWrittenCommands(dma_state.dma_get,
-                                                     size_t{header.size} * sizeof(u32)) &&
+                                                     size_t{header.size} * sizeof(u32),
+                                                     command_list.submit_epoch) &&
                                !(use_safe && memory_manager.IsMemoryDirty(dma_state.dma_get,
                                                                           header.size * sizeof(u32)));
         // EDEN_NX2_LIST_VERIFY=1 (diagnostic, split off): compare every fast read with a safe
@@ -613,13 +614,17 @@ void DmaPusher::CallMultiMethod(const u32* base_start, u32 num_methods) {
     }
 }
 
-bool DmaPusher::IsGpuWrittenCommands(GPUVAddr address, size_t size) {
+bool DmaPusher::IsGpuWrittenCommands(GPUVAddr address, size_t size, u32 since_epoch) {
     if (!Tegra::g_nx2_ampere.load(std::memory_order_relaxed) || size == 0) {
         return false;
     }
+    static const bool by_epoch = std::getenv("EDEN_NX2_EPOCH_SNAPSHOT") != nullptr;
     for (GPUVAddr page = address & ~GPUVAddr{0xfff}; page < address + size; page += 0x1000) {
-        if (const auto device = memory_manager.GpuToCpuAddress(page);
-            device && Tegra::Nx2IsGpuWritten(*device)) {
+        const auto device = memory_manager.GpuToCpuAddress(page);
+        if (!device || !Tegra::Nx2IsGpuWritten(*device)) {
+            continue;
+        }
+        if (!by_epoch || since_epoch == 0 || Tegra::Nx2GpuWrittenEpoch(*device) >= since_epoch) {
             return true;
         }
     }

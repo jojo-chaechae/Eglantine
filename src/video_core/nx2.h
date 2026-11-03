@@ -31,13 +31,21 @@ inline std::atomic<bool> g_nx2_ampere{false};
 inline constexpr u64 Nx2WrittenPageBits = 12;
 inline std::array<std::atomic<u64>, (u64{1} << (36 - Nx2WrittenPageBits)) / 64> g_nx2_gpu_written_pages{};
 
+// Submissions so far, and for each page the count when the GPU last wrote it: an entry submitted
+// after that write has its GPU words in the snapshot already, or they are older than its
+// submission and the game may have refilled the page since.
+inline std::atomic<u32> g_nx2_submit_epoch{1};
+inline std::array<std::atomic<u32>, (u64{1} << (36 - Nx2WrittenPageBits))> g_nx2_gpu_written_epoch{};
+
 inline void Nx2MarkGpuWritten(u64 device_address, u64 size) {
     if (size == 0) {
         return;
     }
     const u64 last = std::min<u64>((device_address + size - 1) >> Nx2WrittenPageBits,
                                    g_nx2_gpu_written_pages.size() * 64 - 1);
+    const u32 epoch = g_nx2_submit_epoch.load(std::memory_order_relaxed);
     for (u64 page = device_address >> Nx2WrittenPageBits; page <= last; ++page) {
+        g_nx2_gpu_written_epoch[page].store(epoch, std::memory_order_relaxed);
         auto& word = g_nx2_gpu_written_pages[page / 64];
         const u64 bit = u64{1} << (page % 64);
         if ((word.load(std::memory_order_relaxed) & bit) == 0) {
@@ -122,6 +130,13 @@ inline void Nx2ClearGpuWrittenPages() {
         word.store(0, std::memory_order_relaxed);
     }
     g_nx2_has_command_list_pages.store(false, std::memory_order_relaxed);
+}
+
+[[nodiscard]] inline u32 Nx2GpuWrittenEpoch(u64 device_address) {
+    const u64 page = device_address >> Nx2WrittenPageBits;
+    return page < g_nx2_gpu_written_epoch.size()
+               ? g_nx2_gpu_written_epoch[page].load(std::memory_order_relaxed)
+               : 0;
 }
 
 [[nodiscard]] inline bool Nx2IsGpuWritten(u64 device_address) {

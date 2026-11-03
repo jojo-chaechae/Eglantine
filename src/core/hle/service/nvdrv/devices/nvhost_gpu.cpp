@@ -450,6 +450,7 @@ NvResult nvhost_gpu::SubmitGPFIFOImpl(IoctlSubmitGpfifo& params, Tegra::CommandL
             // Before the copy: a suspension during it must count as one after it.
             entries.snapshot_suspensions =
                 channel_state->payload->dma_pusher.suspensions.load(std::memory_order_acquire);
+            entries.submit_epoch = Tegra::g_nx2_submit_epoch.fetch_add(1, std::memory_order_relaxed) + 1;
             size_t words = 0;
             for (const auto& entry : entries.command_lists) {
                 words += entry.size;

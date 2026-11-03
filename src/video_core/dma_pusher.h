@@ -126,6 +126,8 @@ struct CommandList final {
     /// that waited behind one, reads memory instead: games write the commands it runs before they
     /// release the acquire.
     u64 snapshot_suspensions = 0;
+    /// Tegra::g_nx2_submit_epoch of this submission.
+    u32 submit_epoch = 0;
 };
 
 /// FNV-1a over pushbuffer words (EDEN_NX2_PB_CHECK).
@@ -197,7 +199,8 @@ public:
     void RecordParsedEntry(const CommandListHeader& header, std::span<const CommandHeader> commands,
                            const char* path);
     /// Whether the entry lies on device pages the GPU has written (NX2).
-    bool IsGpuWrittenCommands(GPUVAddr address, size_t size);
+    /// With since_epoch (EDEN_NX2_EPOCH_SNAPSHOT=1), only GPU writes at or after that submission.
+    bool IsGpuWrittenCommands(GPUVAddr address, size_t size, u32 since_epoch = 0);
     /// Reads a command list on pages the GPU wrote into command_headers, from the copies the
     /// buffer cache made after the work that wrote them or from guest memory for pages flushed
     /// since. False when not all are current (or the list isn't GPU-written): the caller drains,
