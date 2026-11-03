@@ -1548,7 +1548,7 @@ private:
 
     void Command11(HLERequestContext& ctx) {
         const auto* w = ctx.CommandBuffer();
-        LOG_INFO(Service, "(STUBBED) nx2:gsv:1121 TIPC 11 args={:#x}, {:#x}",
+        LOG_DEBUG(Service, "(STUBBED) nx2:gsv:1121 TIPC 11 args={:#x}, {:#x}",
                  u64{w[2]} | (u64{w[3]} << 32), u64{w[4]} | (u64{w[5]} << 32));
         TipcReplyWords(ctx, {0, 0});
     }
