@@ -378,8 +378,9 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
                     static u32 reset_logs{};
                     if (reset_logs < 5) {
                         ++reset_logs;
-                        LOG_INFO(HW_GPU, "Indirect draw reset: list {:#x}, {} records", list_begin,
-                                 count);
+                        LOG_INFO(HW_GPU, "Indirect draw reset: list {:#x}, {} records, first {:#x} {:#x} {:#x} {:#x}",
+                                 list_begin, count, pointers[0], count > 1 ? pointers[1] : 0,
+                                 count > 2 ? pointers[2] : 0, count > 3 ? pointers[3] : 0);
                     }
                 }
             }
