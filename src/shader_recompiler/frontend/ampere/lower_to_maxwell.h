@@ -1840,6 +1840,30 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             // Bit 76: a texel offset after the coordinates (x, y in Ra, Ra+1, offsets in Rb, as
             // for TEX); Maxwell TLD4 takes it as AOFFI (bits 54-55) from Rb.
             const bool offsets = insn.Bits(76, 1) != 0;
+            // Bits 76-77 = 2 (.PTP): x, y in Ra, Ra+1 and four offset pairs in Rb, Rb+1. Maxwell
+            // TLD4 takes them the same way with offset type 2 (bits 54-55).
+            if (!bindless && insn.Bits(76, 2) == 2 && insn.Bits(61, 3) == 1 && !insn.Bits(78, 2) &&
+                insn.Bits(81, 3) == 7 && !insn.Bits(59, 1) && !insn.Bits(89, 1) && mask != 0 &&
+                insn.Bits(40, 14) <= 0x1fff && binding < 18 && source_a + 1 < 245 &&
+                source_b + 1 < 245) {
+                if (result.required_texture_buffer != ~0U && result.required_texture_buffer != binding)
+                    return fail(index, "native texture descriptor buffer conflict");
+                result.required_texture_buffer = binding;
+                emit(0xc800000000000000ULL | predicate | 250 | (u64{source_a} << 8) |
+                     (u64{source_b} << 20) | (u64{2} << 28) | (u64{mask} << 31) |
+                     (u64{insn.Bits(40, 14)} << 36) | (u64{insn.Bits(90, 1)} << 49) | (u64{7} << 51) |
+                     (u64{2} << 54) | (u64{insn.Bits(87, 2)} << 56));
+                const u32 components = static_cast<u32>(std::popcount(mask));
+                for (u32 i = 0; i < components; ++i) {
+                    const u32 target = second_dest == 255 || i < 2
+                                           ? (dest == 255 ? 255U : static_cast<u32>(dest) + i)
+                                           : second_dest + (i - 2);
+                    if (target != 255)
+                        emit(0x5c98000000000000ULL | predicate | target | (u64{15} << 39) |
+                             (u64{250 + i} << 20));
+                }
+                break;
+            }
             if (insn.Bits(61, 3) != 1 || insn.Bits(77, 3) || insn.Bits(81, 3) != 7 || insn.Bits(59, 1) ||
                 (offsets && (bindless || source_b == 255 || (source_a != 255 && source_a >= 245))) ||
                 insn.Bits(89, 1) || mask == 0 ||
