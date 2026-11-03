@@ -13,7 +13,9 @@
 #include <tuple>
 #include <set>
 #include <fstream>
+#include <string_view>
 #include <unordered_map>
+#include <unordered_set>
 #include <vector>
 #include <mutex>
 
@@ -298,47 +300,87 @@ void RasterizerVulkan::PrepareDraw(bool is_indexed, Func&& draw_func) {
         const auto& reset_regs = maxwell3d->regs;
         const GPUVAddr program =
             (u64{reset_regs.pipelines[1].reserved[0] & 0xff} << 32) | reset_regs.pipelines[1].reserved[1];
-        static std::unordered_map<GPUVAddr, bool> reset_programs;
-        auto [entry, inserted] = reset_programs.try_emplace(program, false);
-        if (inserted) {
-            std::array<u32, 44> code{};
-            const GPUVAddr code_address = program + 128;
-            if (gpu_memory->IsFullyMappedRange(code_address, sizeof(code))) {
-                gpu_memory->ReadBlockUnsafe(code_address, code.data(), sizeof(code));
-                entry->second = code == IndirectResetProgram;
-            }
-            if (entry->second) {
-                LOG_INFO(HW_GPU, "Indirect draw reset program at {:#x}: its stores are done here", program);
-            }
+        // Check the code on every draw: program memory is reused, so an address that held the
+        // reset program once may hold another vertex program later.
+        std::array<u32, 44> code{};
+        const GPUVAddr code_address = program + 128;
+        bool is_reset = false;
+        if (gpu_memory->IsFullyMappedRange(code_address, sizeof(code))) {
+            gpu_memory->ReadBlockUnsafe(code_address, code.data(), sizeof(code));
+            is_reset = code == IndirectResetProgram;
         }
-        if (entry->second) {
+        static std::unordered_set<GPUVAddr> reported_programs;
+        if (is_reset && reported_programs.insert(program).second) {
+            LOG_INFO(HW_GPU, "Indirect draw reset program at {:#x}: its stores are done here", program);
+        }
+        if (is_reset) {
+            const auto reject = [](std::string_view reason) {
+                static u32 rejections{};
+                if (rejections++ < 8) {
+                    LOG_WARNING(HW_GPU, "Indirect draw reset skipped: {}", reason);
+                }
+            };
             const auto& reset_draw = maxwell3d->draw_manager.draw_state;
             const auto& cbuf0 = maxwell3d->state.shader_stages[0].const_buffers[0];
-            const GPUVAddr list = gpu_memory->Read<u64>(cbuf0.address + 0x110);
-            const u32 count = (std::min)(reset_draw.vertex_buffer.count, 1U << 20);
-            const GPUVAddr list_begin = list + u64{reset_draw.vertex_buffer.first} * sizeof(u64);
-            const size_t list_bytes = size_t{count} * sizeof(u64);
-            if (count != 0 && gpu_memory->IsFullyMappedRange(list_begin, list_bytes)) {
-                if (gpu_memory->IsMemoryDirty(list_begin, list_bytes, VideoCommon::CacheType::BufferCache)) {
-                    gpu_memory->FlushRegion(list_begin, list_bytes, VideoCommon::CacheType::BufferCache);
-                }
-                std::vector<u64> pointers(count);
-                gpu_memory->ReadBlockUnsafe(list_begin, pointers.data(), list_bytes);
+            std::array<u64, 2> descriptor{};
+            const u64 first = reset_draw.vertex_buffer.first;
+            const u64 count = reset_draw.vertex_buffer.count;
+            const bool has_descriptor =
+                cbuf0.enabled && cbuf0.size >= 0x120 &&
+                gpu_memory->IsFullyMappedRange(cbuf0.address + 0x110, sizeof(descriptor));
+            if (has_descriptor) {
+                gpu_memory->ReadBlockUnsafe(cbuf0.address + 0x110, descriptor.data(), sizeof(descriptor));
+            }
+            if (!has_descriptor) {
+                reject("descriptor unavailable");
+            } else if (descriptor[0] == 0 || count == 0 || count > (1U << 20) ||
+                       // The list holds descriptor[1] bytes of pointers.
+                       first + count > static_cast<u32>(descriptor[1]) / sizeof(u64)) {
+                reject("draw outside the pointer list");
+            } else {
+                const GPUVAddr list_begin = descriptor[0] + first * sizeof(u64);
+                const size_t list_bytes = static_cast<size_t>(count) * sizeof(u64);
                 static constexpr std::array<u32, 5> record{0, 1, 0, 0, 0};
-                const std::span<const u8> bytes{reinterpret_cast<const u8*>(record.data()), sizeof(record)};
-                u32 written = 0;
+                std::vector<u64> pointers(count);
+                bool valid = gpu_memory->IsFullyMappedRange(list_begin, list_bytes);
+                if (valid) {
+                    if (gpu_memory->IsMemoryDirty(list_begin, list_bytes,
+                                                  VideoCommon::CacheType::BufferCache)) {
+                        gpu_memory->FlushRegion(list_begin, list_bytes,
+                                                VideoCommon::CacheType::BufferCache);
+                    }
+                    gpu_memory->ReadBlockUnsafe(list_begin, pointers.data(), list_bytes);
+                }
+                // Write nothing unless every record is a plausible target: one stale list must
+                // not scatter stores over unrelated memory.
                 for (const u64 pointer : pointers) {
-                    if (pointer == 0 || !gpu_memory->IsFullyMappedRange(pointer, sizeof(record))) {
+                    if (!valid) {
+                        break;
+                    }
+                    if (pointer == 0) {
                         continue;
                     }
-                    AccelerateInlineToMemory(pointer, sizeof(record), bytes);
-                    ++written;
+                    valid = pointer % 4 == 0 &&
+                            gpu_memory->IsFullyMappedRange(pointer, sizeof(record)) &&
+                            (pointer + sizeof(record) <= list_begin ||
+                             pointer >= list_begin + list_bytes);
                 }
-                static u32 reset_logs{};
-                if (reset_logs < 5) {
-                    ++reset_logs;
-                    LOG_INFO(HW_GPU, "Indirect draw reset: list {:#x}, {} records ({} written)", list_begin,
-                             count, written);
+                if (!valid) {
+                    reject("invalid record pointer");
+                } else {
+                    const std::span<const u8> bytes{reinterpret_cast<const u8*>(record.data()),
+                                                    sizeof(record)};
+                    for (const u64 pointer : pointers) {
+                        if (pointer != 0) {
+                            AccelerateInlineToMemory(pointer, sizeof(record), bytes);
+                        }
+                    }
+                    static u32 reset_logs{};
+                    if (reset_logs < 5) {
+                        ++reset_logs;
+                        LOG_INFO(HW_GPU, "Indirect draw reset: list {:#x}, {} records", list_begin,
+                                 count);
+                    }
                 }
             }
             submitted = true;
