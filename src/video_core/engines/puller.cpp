@@ -216,6 +216,13 @@ void Puller::ProcessSemaphoreTriggerMethod(DmaPusher& dma_pusher) {
                  regs.semaphore_address.SemaphoreAddress(), regs.semaphore_sequence,
                  dma_pusher.memory_manager.Read<u32>(regs.semaphore_address.SemaphoreAddress()));
     }
+    if (const auto device = dma_pusher.memory_manager.GpuToCpuAddress(regs.semaphore_address.SemaphoreAddress());
+        g_nx2_ampere && device && Nx2WatchesDevice(*device, 4)) {
+        LOG_INFO(HW_GPU, "Device watch: channel {} semaphore {:#x} device {:#x} op {} value {:#x} (now {:#x})",
+                 dma_pusher.channel_state.bind_id, regs.semaphore_address.SemaphoreAddress(), *device,
+                 static_cast<u32>(op), regs.semaphore_sequence,
+                 dma_pusher.memory_manager.Read<u32>(regs.semaphore_address.SemaphoreAddress()));
+    }
     if (op == GpuSemaphoreOperation::WriteLong) {
         const GPUVAddr sequence_address{regs.semaphore_address.SemaphoreAddress()};
         const u32 payload = regs.semaphore_sequence;

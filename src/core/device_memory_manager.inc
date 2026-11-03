@@ -519,6 +519,14 @@ namespace {
 template <typename Manager>
 void Nx2LogCommandPageWrite(Manager& manager, const char* what, DAddr address, const void* src,
                             size_t size) {
+    if (size >= 4 && Tegra::Nx2WatchesDevice(address, size)) {
+        static std::atomic<u32> logged{};
+        if (logged.fetch_add(1, std::memory_order_relaxed) < 2000) {
+            u32 first{};
+            std::memcpy(&first, src, sizeof(first));
+            LOG_INFO(HW_Memory, "Device watch: {} {:#x} size {:#x} first word {:#x}", what, address, size, first);
+        }
+    }
     static const bool enabled = std::getenv("EDEN_NX2_CMD_WRITES") != nullptr;
     if (!enabled || size < 4 || !Tegra::Nx2TouchesSubmittedPage(address, size)) {
         return;

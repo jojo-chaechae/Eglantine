@@ -6,6 +6,7 @@
 #include <algorithm>
 #include <array>
 #include <atomic>
+#include <cstdlib>
 #include <functional>
 #include <map>
 #include <mutex>
@@ -358,6 +359,16 @@ inline bool Nx2SparseUnwritten(u64 gpu_address, u64 size) {
         }
     }
     return true;
+}
+
+// EDEN_NX2_SEM_WATCH_DEV=<device address>: log releases, acquires and writes on the two pages
+// there. A stuck semaphore's GPU address changes per run, its device address does not.
+inline bool Nx2WatchesDevice(u64 address, u64 size) {
+    static const u64 watch = [] {
+        const char* value = std::getenv("EDEN_NX2_SEM_WATCH_DEV");
+        return value ? u64{std::strtoull(value, nullptr, 16)} : u64{};
+    }();
+    return watch != 0 && address < watch + 0x2000 && address + size > watch;
 }
 
 /// GPU VA in the first page that mirrors a release at `address`, or 0.
