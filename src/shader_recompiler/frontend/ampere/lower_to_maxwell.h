@@ -1628,9 +1628,14 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                 }
                 source = 250;
             }
-            emit(base(0x5cb0000000000000ULL) | (u64{byte ? 0U : small || short_word ? 1U : 2U} << 8) |
+            // Maxwell F2I has no 8-bit result: convert to 16 bits, then saturate with I2I.
+            emit(base(0x5cb0000000000000ULL) | (u64{narrow ? 1U : 2U} << 8) |
                  (u64{2} << 10) | (u64{is_signed} << 12) | (u64{source} << 20) |
                  (u64{insn.Bits(78, 2)} << 39) | (u64{insn.Bits(80, 1)} << 44));
+            if (byte) {
+                emit(base(0x5ce0000000000000ULL) | (u64{2} << 10) | (u64{is_signed} << 12) |
+                     (u64{is_signed} << 13) | (dest << 20) | (u64{1} << 50));
+            }
             if (!is_signed && !narrow) {
                 emit(base(0x5c40000000000000ULL) | (dest << 8) | (u64{251} << 20) |
                      (u64{1} << 41) | (u64{7} << 48));
