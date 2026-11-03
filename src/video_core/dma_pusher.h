@@ -194,7 +194,8 @@ public:
     /// and straight from guest memory, to find pushbuffer desyncs. Debug aid for Switch 2.
     void DumpCurrentEntry(const char* reason);
     void CheckSubmitHash(const CommandListHeader& header, u64 submit_hash);
-    void RecordParsedEntry(const CommandListHeader& header, std::span<const CommandHeader> commands);
+    void RecordParsedEntry(const CommandListHeader& header, std::span<const CommandHeader> commands,
+                           const char* path);
     /// Whether the entry lies on device pages the GPU has written (NX2).
     bool IsGpuWrittenCommands(GPUVAddr address, size_t size);
     /// Reads a command list on pages the GPU wrote into command_headers, from the copies the
@@ -253,6 +254,9 @@ public:
         u32 subchannel;
         u32 resume;       ///< command_resume_offset at parse time
         std::array<u32, 6> words; ///< First words as parsed
+        const char* path;         ///< Where the words came from
+        s32 snapshot_diff;        ///< Words differing from the submitted ones, -1 if none kept
+        s32 snapshot_first;       ///< First differing word
     };
     std::array<ParsedEntry, 64> parsed_entries{};
     size_t parsed_entry_count{};

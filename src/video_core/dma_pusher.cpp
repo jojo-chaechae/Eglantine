@@ -275,18 +275,18 @@ bool DmaPusher::Step() {
                      command_list.submitted_offsets[dma_pushbuffer_subindex],
                  header.size},
                 "snapshot");
-            RecordParsedEntry(header, commands);
+            RecordParsedEntry(header, commands, "snapshot");
             command_resume_offset += ProcessCommands(commands, 0);
         } else if (use_safe) {
             Tegra::Memory::GpuGuestMemory<Tegra::CommandHeader, Tegra::Memory::GuestMemoryFlags::SafeRead>headers(memory_manager, dma_state.dma_get, header.size, &command_headers);
             const std::span<const CommandHeader> commands{headers.data(), headers.size()};
-            RecordParsedEntry(header, commands);
+            RecordParsedEntry(header, commands, "safe");
             command_resume_offset +=
                 ProcessCommands(commands.subspan(command_resume_offset), command_resume_offset);
         } else if (ReadGpuWrittenCommands(dma_state.dma_get, static_cast<u32>(header.size))) {
             const std::span<const CommandHeader> commands =
                 verified({command_headers.data(), header.size}, "list copy");
-            RecordParsedEntry(header, commands);
+            RecordParsedEntry(header, commands, "list copy");
             command_resume_offset +=
                 ProcessCommands(commands.subspan(command_resume_offset), command_resume_offset);
         } else {
@@ -294,7 +294,7 @@ bool DmaPusher::Step() {
             Tegra::Memory::GpuGuestMemory<Tegra::CommandHeader, Tegra::Memory::GuestMemoryFlags::UnsafeRead>headers(memory_manager, dma_state.dma_get, header.size, &command_headers);
             const std::span<const CommandHeader> commands =
                 verified({headers.data(), headers.size()}, "unsafe");
-            RecordParsedEntry(header, commands);
+            RecordParsedEntry(header, commands, "unsafe");
             command_resume_offset +=
                 ProcessCommands(commands.subspan(command_resume_offset), command_resume_offset);
         }
@@ -740,7 +740,7 @@ void DmaPusher::CheckSubmitHash(const CommandListHeader& header, u64 submit_hash
 }
 
 void DmaPusher::RecordParsedEntry(const CommandListHeader& header,
-                                  std::span<const CommandHeader> commands) {
+                                  std::span<const CommandHeader> commands, const char* path) {
     if (!g_record_parsed_entries) {
         return;
     }
@@ -751,9 +751,24 @@ void DmaPusher::RecordParsedEntry(const CommandListHeader& header,
     ParsedEntry& entry = parsed_entries[parsed_entry_count++ % parsed_entries.size()];
     entry = {header.addr,          static_cast<u32>(header.size), hash,
              dma_state.method,     dma_state.method_count,        dma_state.subchannel,
-             static_cast<u32>(command_resume_offset), {}};
+             static_cast<u32>(command_resume_offset), {}, path, -1, -1};
     for (size_t i = 0; i < (std::min)(commands.size(), entry.words.size()); ++i) {
         entry.words[i] = commands[i].argument;
+    }
+    if (const auto& list = dma_pushbuffer.front(); command_resume_offset == 0 &&
+                                                   commands.size() == header.size &&
+                                                   dma_pushbuffer_subindex <
+                                                       list.submitted_offsets.size()) {
+        const CommandHeader* const submitted =
+            list.submitted_words.data() + list.submitted_offsets[dma_pushbuffer_subindex];
+        entry.snapshot_diff = 0;
+        for (size_t i = 0; i < commands.size(); ++i) {
+            if (commands[i].argument != submitted[i].argument) {
+                if (entry.snapshot_diff++ == 0) {
+                    entry.snapshot_first = static_cast<s32>(i);
+                }
+            }
+        }
     }
 }
 
@@ -770,11 +785,12 @@ void DmaPusher::DumpCurrentEntry(const char* reason) {
         }
         LOG_WARNING(HW_GPU,
                     "  parsed -{}: {:#x}+{:#x} {} (in: method {:#x} count {} sub {} resume {}) "
-                    "words {:08x}",
+                    "words {:08x}; {} read, {} words differ from submitted (first {})",
                     i, entry.address, entry.size,
                     hash == entry.hash ? "unchanged" : "CHANGED since parsed", entry.method,
                     entry.method_count, entry.subchannel, entry.resume,
-                    fmt::join(entry.words, " "));
+                    fmt::join(entry.words, " "), entry.path, entry.snapshot_diff,
+                    entry.snapshot_first);
     }
     // EDEN_NX2_PB_DUMP=<file>: also write the whole command list (u64 address, u32 size and the
     // current words of every entry, then the current entry index) for offline replay.
