@@ -11,6 +11,7 @@
 #include <span>
 #include <optional>
 #include <string_view>
+#include <string>
 #include <vector>
 #include "common/common_types.h"
 
@@ -46,6 +47,16 @@ struct LoweredProgram {
 // Lower only operations whose semantics are representable by the existing
 // Maxwell frontend. These are new instructions, not reinterpretations of the
 // native bytes. Scheduling/control words are added by the environment adapter.
+// EDEN_NX2_BISECT=ldc,f2irp,f2in,vote: reject the shaders that need one of the newer lowerings
+// (to find which one changes a game's behaviour without rebuilding).
+[[nodiscard]] inline bool BisectOff(std::string_view key) {
+    static const std::string value = [] {
+        const char* env = std::getenv("EDEN_NX2_BISECT");
+        return std::string{env ? env : ""};
+    }();
+    return value.find(key) != std::string::npos;
+}
+
 inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 high_uniforms) {
     LoweredProgram result;
     // UR28 and up (when used) live just below R216: UR28 at R(216 - high_uniforms).
@@ -725,6 +736,8 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             if (uniform_register(target) == ~0U || insn.words[1] ||
                 insn.Bits(72, 2) > 2 || native_predicate != 7)
                 return fail(index, "native uniform vote mode");
+            if (target >= 16 && target != 63 && BisectOff("vote"))
+                return fail(index, "bisect: uniform vote to a high register");
             const u32 temporary = output == 7 ? 7 : 6 - output;
             const u32 mask = 1U << temporary;
             if (output != 7) emit(0x38e8000000070000ULL | 253 | (u64{255} << 8) | (u64{mask} << 20));
@@ -883,6 +896,7 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             if (width > 5 || (mode != 0 && mode != 2) || insn.Bits(91, 1) ||
                 bank() >= 18 ||
                 (width == 5 && ((dest & 1) || dest >= 254))) return fail(index, "native indexed constant load mode");
+            if (width < 4 && BisectOff("ldc")) return fail(index, "bisect: narrow constant load");
             emit(base(0xef90000000000000ULL) | (u64{insn.Bits(24, 8)} << 8) |
                  (u64{insn.Bits(38, 16)} << 20) | (u64{bank()} << 36) | (u64{mode} << 44) | (u64{width} << 48));
             break;
@@ -1608,6 +1622,10 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                 (opcode != 0xb05 && (insn.words[1] & (half ? 0xefffff00U : 0xffffff00U))) ||
                 (opcode == 0xd05 && uniform_register(insn.Bits(32, 8)) == ~0U)) {
                 return fail(index, "native float-to-integer conversion mode");
+            }
+            if ((word && insn.Bits(78, 2) == 2 && BisectOff("f2irp")) ||
+                ((byte || short_word) && BisectOff("f2in"))) {
+                return fail(index, "bisect: float-to-integer mode");
             }
             const bool is_signed = insn.Bits(72, 1);
             u32 source = opcode == 0xb05 ? materialize(2, 0, 252, false, false)
