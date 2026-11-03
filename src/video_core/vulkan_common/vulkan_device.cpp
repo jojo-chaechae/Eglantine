@@ -624,6 +624,7 @@ Device::Device(VkInstance instance_, vk::PhysicalDevice physical_, VkSurfaceKHR 
     // off for newer AMD drivers below: checked after that, every AMD GPU looked like GCN4 and lost
     // VK_EXT_sampler_filter_minmax (an RDNA3 Radeon 780M logged it).
     const bool amd_gcn4_or_older = is_amd && !features.shader_float16_int8.shaderFloat16;
+    const bool host_float16 = features.shader_float16_int8.shaderFloat16;
     if (is_amd_driver) {
         // AMD drivers need a higher amount of Sets per Pool in certain circumstances like in XC2.
         sets_per_pool = 96;
@@ -657,6 +658,13 @@ Device::Device(VkInstance instance_, vk::PhysicalDevice physical_, VkSurfaceKHR 
         // Intel's compiler crashes when using fp16 on Astral Chain, disable it for the time being.
         LOG_WARNING(Render_Vulkan, "Intel has broken float16 math");
         features.shader_float16_int8.shaderFloat16 = false;
+    }
+
+    // EDEN_FP16=0 or 1 overrides the float16 driver workarounds, for testing them on other hosts.
+    if (const char* fp16 = std::getenv("EDEN_FP16"); fp16 != nullptr && (fp16[0] == '0' || fp16[0] == '1')) {
+        features.shader_float16_int8.shaderFloat16 = fp16[0] == '1' && host_float16;
+        LOG_WARNING(Render_Vulkan, "EDEN_FP16 forces float16 math {}",
+                    features.shader_float16_int8.shaderFloat16 ? "on" : "off");
     }
 
     has_broken_compute =
