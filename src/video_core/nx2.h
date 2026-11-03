@@ -70,6 +70,20 @@ inline void Nx2MarkSubmittedPage(u64 device_address) {
     return false;
 }
 
+struct Nx2CommandPageWrite {
+    u64 when_ns;
+    u64 address;
+    u64 size;
+    u64 first;   ///< Address of the first changed word
+    u32 changed; ///< Words changed
+    const char* what;
+    std::array<u32, 6> old_words;
+    std::array<u32, 6> new_words;
+};
+inline std::mutex g_nx2_command_page_writes_mutex;
+inline std::array<Nx2CommandPageWrite, 4096> g_nx2_command_page_writes{};
+inline u64 g_nx2_command_page_write_count{};
+
 // GPU-written device pages the front has read command lists from (same layout as above). The
 // buffer cache copies these pages into host memory right after the compute or copy work that
 // writes them and submits, so the front reads the copy once the GPU is done instead of draining

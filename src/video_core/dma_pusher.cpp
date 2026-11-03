@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <algorithm>
+#include <chrono>
 #include <atomic>
 #include <cstdlib>
 #include <cstdio>
@@ -751,7 +752,10 @@ void DmaPusher::RecordParsedEntry(const CommandListHeader& header,
     ParsedEntry& entry = parsed_entries[parsed_entry_count++ % parsed_entries.size()];
     entry = {header.addr,          static_cast<u32>(header.size), hash,
              dma_state.method,     dma_state.method_count,        dma_state.subchannel,
-             static_cast<u32>(command_resume_offset), {}, path, -1, -1};
+             static_cast<u32>(command_resume_offset), {}, path, -1, -1,
+             static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                  std::chrono::steady_clock::now().time_since_epoch())
+                                  .count())};
     for (size_t i = 0; i < (std::min)(commands.size(), entry.words.size()); ++i) {
         entry.words[i] = commands[i].argument;
     }
@@ -791,6 +795,39 @@ void DmaPusher::DumpCurrentEntry(const char* reason) {
                     entry.method_count, entry.subchannel, entry.resume,
                     fmt::join(entry.words, " "), entry.path, entry.snapshot_diff,
                     entry.snapshot_first);
+    }
+    // EDEN_NX2_CMD_WRITES: the GPU-side writes into the last parsed entries, and when they
+    // happened relative to the parse (negative: before it).
+    if (std::getenv("EDEN_NX2_CMD_WRITES") != nullptr) {
+        std::scoped_lock lock{g_nx2_command_page_writes_mutex};
+        const u64 total = g_nx2_command_page_write_count;
+        const u64 kept = (std::min<u64>)(total, g_nx2_command_page_writes.size());
+        for (size_t i = 0; i < std::min<size_t>(parsed_entry_count, 16); ++i) {
+            const auto& entry = parsed_entries[(parsed_entry_count - 1 - i) % parsed_entries.size()];
+            const auto device = memory_manager.GpuToCpuAddress(entry.address);
+            if (!device) {
+                continue;
+            }
+            const u64 begin = *device;
+            const u64 end = begin + u64{entry.size} * sizeof(u32);
+            u32 shown = 0;
+            for (u64 k = 0; k < kept && shown < 8; ++k) {
+                const auto& write =
+                    g_nx2_command_page_writes[(total - 1 - k) % g_nx2_command_page_writes.size()];
+                if (write.address >= end || write.address + write.size <= begin) {
+                    continue;
+                }
+                ++shown;
+                LOG_WARNING(HW_GPU,
+                            "  write into parsed -{} ({:#x}): {} [{:#x}, +{:#x}) at {:+.3f} ms, {} "
+                            "words from {:#x}: old {:08x} / new {:08x}",
+                            i, entry.address, write.what, write.address, write.size,
+                            (static_cast<double>(write.when_ns) -
+                             static_cast<double>(entry.when_ns)) / 1e6,
+                            write.changed, write.first, fmt::join(write.old_words, " "),
+                            fmt::join(write.new_words, " "));
+            }
+        }
     }
     // EDEN_NX2_PB_DUMP=<file>: also write the whole command list (u64 address, u32 size and the
     // current words of every entry, then the current entry index) for offline replay.

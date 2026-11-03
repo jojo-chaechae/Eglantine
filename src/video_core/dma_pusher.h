@@ -257,6 +257,7 @@ public:
         const char* path;         ///< Where the words came from
         s32 snapshot_diff;        ///< Words differing from the submitted ones, -1 if none kept
         s32 snapshot_first;       ///< First differing word
+        u64 when_ns;              ///< steady_clock time of the parse
     };
     std::array<ParsedEntry, 64> parsed_entries{};
     size_t parsed_entry_count{};

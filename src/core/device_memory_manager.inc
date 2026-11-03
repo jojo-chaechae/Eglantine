@@ -5,6 +5,7 @@
 // SPDX-License-Identifier: GPL-2.0-or-later
 
 #include <atomic>
+#include <chrono>
 #include <cstdlib>
 #include <cstring>
 #include <string>
@@ -513,17 +514,13 @@ void DeviceMemoryManager<Traits>::ReadBlock(DAddr address, void* dest_pointer, s
 
 
 namespace {
-// EDEN_NX2_CMD_WRITES=1 (diagnostic): log device writes that change words of pages holding
-// submitted command lists.
+// EDEN_NX2_CMD_WRITES=1 (diagnostic): record device writes that change words of pages holding
+// submitted command lists (the trace dump prints the ones into the entries it shows).
 template <typename Manager>
 void Nx2LogCommandPageWrite(Manager& manager, const char* what, DAddr address, const void* src,
                             size_t size) {
     static const bool enabled = std::getenv("EDEN_NX2_CMD_WRITES") != nullptr;
     if (!enabled || size < 4 || !Tegra::Nx2TouchesSubmittedPage(address, size)) {
-        return;
-    }
-    static std::atomic<u32> logged{};
-    if (logged.load(std::memory_order_relaxed) >= 400) {
         return;
     }
     const size_t words = (std::min<size_t>)(size, 0x4000) / 4;
@@ -532,25 +529,35 @@ void Nx2LogCommandPageWrite(Manager& manager, const char* what, DAddr address, c
     manager.ReadBlockUnsafe(address, old_words.data(), words * 4);
     std::memcpy(new_words.data(), src, words * 4);
     size_t first = words;
-    size_t differing = 0;
+    u32 changed = 0;
     for (size_t i = 0; i < words; ++i) {
         if (old_words[i] != new_words[i]) {
             first = (std::min)(first, i);
-            ++differing;
+            ++changed;
         }
     }
-    if (differing == 0 || logged.fetch_add(1) >= 400) {
+    if (changed == 0) {
         return;
     }
-    std::string old_text;
-    std::string new_text;
-    for (size_t i = first; i < (std::min)(words, first + 6); ++i) {
-        old_text += fmt::format(" {:08x}", old_words[i]);
-        new_text += fmt::format(" {:08x}", new_words[i]);
+    Tegra::Nx2CommandPageWrite record{
+        .when_ns = static_cast<u64>(std::chrono::duration_cast<std::chrono::nanoseconds>(
+                                        std::chrono::steady_clock::now().time_since_epoch())
+                                        .count()),
+        .address = address,
+        .size = size,
+        .first = address + first * 4,
+        .changed = changed,
+        .what = what,
+        .old_words = {},
+        .new_words = {},
+    };
+    for (size_t i = 0; i < 6 && first + i < words; ++i) {
+        record.old_words[i] = old_words[first + i];
+        record.new_words[i] = new_words[first + i];
     }
-    LOG_WARNING(HW_Memory,
-                "{} into command page [{:#x}, +{:#x}) changes {} words from {:#x}: old{} / new{}",
-                what, address, size, differing, address + first * 4, old_text, new_text);
+    std::scoped_lock lock{Tegra::g_nx2_command_page_writes_mutex};
+    Tegra::g_nx2_command_page_writes[Tegra::g_nx2_command_page_write_count++ %
+                                     Tegra::g_nx2_command_page_writes.size()] = record;
 }
 } // Anonymous namespace
 
