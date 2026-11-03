@@ -259,9 +259,9 @@ void QueryCacheBase<Traits>::CounterReport(GPUVAddr addr, QueryType counter_type
     }
     DAddr cpu_addr = *cpu_addr_opt;
     if (Tegra::Nx2WatchesDevice(cpu_addr, 4)) {
-        LOG_INFO(HW_GPU, "Device watch: report {:#x} device {:#x} type {} flags {:#x} payload {:#x} as {}",
+        LOG_INFO(HW_GPU, "Device watch: report {:#x} device {:#x} type {} flags {:#x} payload {:#x} as {} channel {}",
                  addr, cpu_addr, static_cast<u32>(counter_type), static_cast<u32>(flags), payload,
-                 gpu_memory->GetID());
+                 gpu_memory->GetID(), static_cast<s64>(this->current_channel_id));
     }
     const size_t new_query_id = streamer->WriteCounter(cpu_addr, has_timestamp, payload, subreport);
     auto* query = streamer->GetQuery(new_query_id);

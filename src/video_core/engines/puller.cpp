@@ -339,6 +339,12 @@ void Puller::ProcessSemaphoreExecute(DmaPusher& dma_pusher, u32 argument) {
                              (regs.reg_array[0x17] & ~3U);
     const u32 payload = regs.reg_array[0x19];
     const u32 operation = argument & 7;
+    if (const auto device = dma_pusher.memory_manager.GpuToCpuAddress(address);
+        device && Nx2WatchesDevice(*device, 4)) {
+        LOG_INFO(HW_GPU, "Device watch: channel {} SEM_EXECUTE {:#x} device {:#x} op {} payload {:#x} (now {:#x})",
+                 dma_pusher.channel_state.bind_id, address, *device, operation, payload,
+                 dma_pusher.memory_manager.Read<u32>(address));
+    }
     if (operation == 1) { // RELEASE
         OnBack([rasterizer = dma_pusher.rasterizer, address, payload] {
             rasterizer->Query(address, VideoCommon::QueryType::Payload,
