@@ -1528,6 +1528,32 @@ private:
     std::map<u32, Kernel::KEvent*> m_events;
 };
 
+// Session returned by gsv 1121. The SDK sends TIPC 0 (a tick-like u64 it requires echoed) right
+// after getting the handle, then 11 with two u64 values. The server behind 11 is unknown, so it
+// logs its arguments and replies 0. Left to the auto stub, 1121 had no handle and Welcome Tour
+// aborted with 2001-0114.
+class INx2Session1121 final : public ServiceFramework<INx2Session1121> {
+public:
+    explicit INx2Session1121(Core::System& system_) : ServiceFramework{system_, "nx2:gsv:1121"} {
+        RegisterHandlersTipc({
+            {0, &INx2Session1121::Handshake, "Handshake"},
+            {11, &INx2Session1121::Command11, "Unknown11"},
+        });
+    }
+
+private:
+    void Handshake(HLERequestContext& ctx) {
+        TipcHandshake(ctx, "nx2:gsv:1121");
+    }
+
+    void Command11(HLERequestContext& ctx) {
+        const auto* w = ctx.CommandBuffer();
+        LOG_INFO(Service, "(STUBBED) nx2:gsv:1121 TIPC 11 args={:#x}, {:#x}",
+                 u64{w[2]} | (u64{w[3]} << 32), u64{w[4]} | (u64{w[5]} << 32));
+        TipcReplyWords(ctx, {0, 0});
+    }
+};
+
 // nn::camera::sdk camera context (gsv 602). GameChat builds its local camera video storage from it
 // and polls it every frame. Nothing about the commands is known beyond the arguments seen (3 and
 // 21 take the camera name "Default", 29 a u32 0x180 = 384, the width of the 384x216 camera images),
@@ -3023,7 +3049,7 @@ public:
             {1111, &INx2GraphicsSystemSession::SetFeatureVersion, "SetFeatureVersion"},
             {1112, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown1112"},
             {1113, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown1113"},
-            {1121, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown1121"},
+            {1121, &INx2GraphicsSystemSession::OpenSession1121, "OpenSession1121"},
             {1203, &INx2GraphicsSystemSession::StubReplyZeroed, "Unknown1203"},
             {1212, &INx2GraphicsSystemSession::DestroyNativeImage, "DestroyFeatureImagePool1212"},
             {1501, &INx2GraphicsSystemSession::CheckPermission, "CheckPermission1501"},
@@ -3150,6 +3176,15 @@ private:
     void OpenChatSession(HLERequestContext& ctx) {
         LOG_WARNING(Service, "(STUBBED) nx2:gsv TIPC 1202, returning a nx2:chat session");
         ReturnRawSession(system, ctx, std::make_shared<INx2ChatGsvSession>(system));
+    }
+
+    // 1121() returns a session the SDK handshakes with right away (move handle at word 3).
+    void OpenSession1121(HLERequestContext& ctx) {
+        LOG_WARNING(Service, "(STUBBED) nx2:gsv TIPC 1121, returning a nx2:gsv:1121 session");
+        auto* client = CreateRawSession(system, ctx, std::make_shared<INx2Session1121>(system));
+        IPC::ResponseBuilder rb{ctx, 2, 0, 1};
+        rb.Push(ResultSuccess);
+        rb.PushMoveObjects(ctx, *client);
     }
 
     void OpenSyncptSession(HLERequestContext& ctx) {
