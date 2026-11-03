@@ -459,6 +459,13 @@ Result ResourceManager::SendVibrationValue(u64 aruid,
     if (result.IsSuccess() && has_active_aruid) {
         device = GetNSVibrationDevice(handle);
     }
+    LOG_DEBUG(Service_HID,
+              "diag vib: aruid={} active_aruid={} res={:#x} type={} npad_id={} idx={} device={} "
+              "dev_active={} lo={:.3f}@{:.1f} hi={:.3f}@{:.1f}",
+              aruid, has_active_aruid, result.raw, static_cast<u32>(handle.npad_type),
+              handle.npad_id, static_cast<u32>(handle.device_index), device != nullptr,
+              device != nullptr && device->IsActive(), value.low_amplitude, value.low_frequency,
+              value.high_amplitude, value.high_frequency);
     if (device != nullptr) {
         // Prevent sending vibrations to an inactive vibration handle
         if (!device->IsActive()) {
