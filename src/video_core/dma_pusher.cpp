@@ -190,6 +190,44 @@ bool DmaPusher::Step() {
         static Common::ScratchBuffer<CommandHeader> verify_headers;
         const auto verified = [&](std::span<const CommandHeader> fast,
                                   const char* path) -> std::span<const CommandHeader> {
+            // EDEN_NX2_SNAPSHOT_CHECK=1 (diagnostic): log entries whose live words differ from
+            // the words as submitted (GPU-written pages skip the snapshot).
+            static const bool snapshot_check = std::getenv("EDEN_NX2_SNAPSHOT_CHECK") != nullptr;
+            if (snapshot_check && command_resume_offset == 0 &&
+                dma_pushbuffer_subindex < command_list.submitted_offsets.size() &&
+                fast.size() == header.size) {
+                const CommandHeader* const snap = command_list.submitted_words.data() +
+                                        command_list.submitted_offsets[dma_pushbuffer_subindex];
+                size_t first = fast.size();
+                size_t differing = 0;
+                for (size_t i = 0; i < fast.size(); ++i) {
+                    if (fast[i].argument != snap[i].argument) {
+                        first = (std::min)(first, i);
+                        ++differing;
+                    }
+                }
+                static std::atomic<u32> checked{};
+                static std::atomic<u32> logged{};
+                const u32 count = checked.fetch_add(1) + 1;
+                if (differing != 0 && logged.fetch_add(1) < 200) {
+                    const size_t from = first;
+                    const size_t to = (std::min)(fast.size(), from + 6);
+                    std::string live_words;
+                    std::string snap_words;
+                    for (size_t i = from; i < to; ++i) {
+                        live_words += fmt::format(" {:08x}", fast[i].argument);
+                        snap_words += fmt::format(" {:08x}", snap[i].argument);
+                    }
+                    LOG_WARNING(HW_GPU,
+                                "Snapshot check: {} read of {:#x}+{:#x} (entry {}) differs in {} "
+                                "words from {}: live{} / submitted{}",
+                                path, u64{dma_state.dma_get}, u64{header.size},
+                                dma_pushbuffer_subindex, differing, first, live_words, snap_words);
+                } else if (count % 100000 == 0) {
+                    LOG_INFO(HW_GPU, "Snapshot check: {} live reads, {} differed", count,
+                             logged.load());
+                }
+            }
             if (!list_verify || VideoCommon::GpuSplit::Get().Active()) {
                 return fast;
             }
