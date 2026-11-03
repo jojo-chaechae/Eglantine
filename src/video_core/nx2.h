@@ -9,6 +9,8 @@
 #include <functional>
 #include <map>
 #include <mutex>
+#include <shared_mutex>
+#include <unordered_set>
 #include <utility>
 #include <vector>
 
@@ -93,47 +95,26 @@ inline void Nx2ClearGpuWrittenPages() {
 // NVN2 queues release their progress values into the second page of a two-page GPU-accessible
 // region and GPU acquires read the same offsets in the first page (the CPU polls the second).
 // Something on the console copies one into the other; until that is known, the puller mirrors
-// releases that land in a second page. Every queue has such a region, so keep a small table.
-inline constexpr size_t Nx2MaxSemaphoreRegions = 32;
-inline std::array<std::atomic<u64>, Nx2MaxSemaphoreRegions> g_nx2_semaphore_regions{}; // starts
+// releases that land in a second page. Every queue has such a region, and games make well over
+// 32 of them.
+inline std::shared_mutex g_nx2_semaphore_regions_mutex;
+inline std::unordered_set<u64> g_nx2_semaphore_regions; // starts
 
-/// False if the table is full (the region's releases are then not mirrored).
-inline bool Nx2AddSemaphoreRegion(u64 start) {
-    for (auto& region : g_nx2_semaphore_regions) {
-        if (region.load() == start) {
-            return true;
-        }
-    }
-    for (auto& region : g_nx2_semaphore_regions) {
-        u64 expected = 0;
-        if (region.compare_exchange_strong(expected, start)) {
-            return true;
-        }
-    }
-    return false;
-}
-
-[[nodiscard]] inline size_t Nx2SemaphoreRegionCount() {
-    size_t count = 0;
-    for (const auto& region : g_nx2_semaphore_regions) {
-        count += region.load(std::memory_order_relaxed) != 0 ? 1 : 0;
-    }
-    return count;
+inline void Nx2AddSemaphoreRegion(u64 start) {
+    std::unique_lock lock{g_nx2_semaphore_regions_mutex};
+    g_nx2_semaphore_regions.insert(start);
 }
 
 /// The region's memory was destroyed: stop mirroring into it.
 inline void Nx2RemoveSemaphoreRegion(u64 start) {
-    for (auto& region : g_nx2_semaphore_regions) {
-        u64 expected = start;
-        region.compare_exchange_strong(expected, 0);
-    }
+    std::unique_lock lock{g_nx2_semaphore_regions_mutex};
+    g_nx2_semaphore_regions.erase(start);
 }
 
 /// A new emulation session starts: no queue has a region yet.
 inline void Nx2ClearSemaphoreRegions() {
-    for (auto& region : g_nx2_semaphore_regions) {
-        region.store(0);
-    }
+    std::unique_lock lock{g_nx2_semaphore_regions_mutex};
+    g_nx2_semaphore_regions.clear();
 }
 
 // Switch 2 sparse regions (nx2:gpu 214, word 7 bit 0x200: title 1's terrain texture arrays and
@@ -342,16 +323,9 @@ inline bool Nx2SparseUnwritten(u64 gpu_address, u64 size) {
 
 /// GPU VA in the first page that mirrors a release at `address`, or 0.
 inline u64 Nx2SemaphoreMirror(u64 address) {
-    for (const auto& region : g_nx2_semaphore_regions) {
-        const u64 start = region.load(std::memory_order_relaxed);
-        if (start == 0) {
-            continue;
-        }
-        if (address >= start + 0x1000 && address < start + 0x2000) {
-            return address - 0x1000;
-        }
-    }
-    return 0;
+    const u64 start = (address & ~u64{0xfff}) - 0x1000;
+    std::shared_lock lock{g_nx2_semaphore_regions_mutex};
+    return g_nx2_semaphore_regions.contains(start) ? address - 0x1000 : 0;
 }
 
 /// Channels suspended on a semaphore acquire. A console channel polls and sees every release;
