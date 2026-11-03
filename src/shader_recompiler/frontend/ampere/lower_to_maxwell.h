@@ -1920,7 +1920,9 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             const bool depth_compare = insn.Bits(78, 1);
             const u32 dimension = insn.Bits(61, 3), lod = insn.Bits(87, 3);
             const u32 source_a = insn.Bits(24, 8), source_b = insn.Bits(32, 8);
-            if (!bindless && dimension == 5 && depth_compare && lod == 0 && !split && mask == 1) {
+            // A second descriptor buffer goes through general_tex, which reads it bindless.
+            if (!bindless && dimension == 5 && depth_compare && lod == 0 && !split && mask == 1 &&
+                (result.required_texture_buffer == ~0U || result.required_texture_buffer == insn.Bits(54, 5))) {
                 if (!insn.Bits(60, 1) || insn.Bits(76, 2) || insn.Bits(81, 3) != 7 ||
                     insn.Bits(59, 1) || insn.Bits(40, 14) > 0x1fff || insn.Bits(54, 5) >= 18 ||
                     (source_a & 1) || (source_b & 1) || source_a >= 248 || source_b >= 248 || dest >= 248)
