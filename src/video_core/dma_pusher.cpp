@@ -143,6 +143,21 @@ bool DmaPusher::Step() {
                     LOG_DEBUG(HW_GPU, "  previous entry ends {:08x}; next entry starts {:08x}",
                               fmt::join(prev_words, " "), fmt::join(next_words, " "));
                 }
+                // EDEN_NX2_PB_DUMP (diagnostic): dump the submission the first time a split
+                // method's buffer resumes in a later entry rather than this one.
+                static const bool dump_interrupted = std::getenv("EDEN_NX2_PB_DUMP") != nullptr;
+                if (static bool dumped{}; dump_interrupted && !dumped &&
+                                          dma_state.method_count != 0 &&
+                                          header.addr != split_method_end) {
+                    const auto& lists = command_list.command_lists;
+                    if (std::any_of(lists.begin() + dma_pushbuffer_subindex + 1, lists.end(),
+                                    [this](const CommandListHeader& later) {
+                                        return later.addr == split_method_end;
+                                    })) {
+                        dumped = true;
+                        DumpCurrentEntry("split method interrupted");
+                    }
+                }
                 if (park_split_methods) {
                     ResolveSplitMethod(header.addr);
                 }
@@ -705,6 +720,7 @@ void DmaPusher::RecordParsedEntry(const CommandListHeader& header,
 }
 
 void DmaPusher::DumpCurrentEntry(const char* reason) {
+    static bool pb_dump_written{};
     // Entries whose memory changed after they were parsed (the CPU rewrote them meanwhile).
     for (size_t i = 0; i < std::min(parsed_entry_count, parsed_entries.size()); ++i) {
         const auto& entry = parsed_entries[(parsed_entry_count - 1 - i) % parsed_entries.size()];
@@ -725,7 +741,8 @@ void DmaPusher::DumpCurrentEntry(const char* reason) {
     // EDEN_NX2_PB_DUMP=<file>: also write the whole command list (u64 address, u32 size and the
     // current words of every entry, then the current entry index) for offline replay.
     if (static const char* const path = std::getenv("EDEN_NX2_PB_DUMP");
-        path != nullptr && !dma_pushbuffer.empty()) {
+        path != nullptr && !dma_pushbuffer.empty() && !pb_dump_written) {
+        pb_dump_written = true;
         if (std::FILE* file = std::fopen(path, "wb")) {
             const auto& lists = dma_pushbuffer.front().command_lists;
             const u64 current = dma_pushbuffer_subindex;
