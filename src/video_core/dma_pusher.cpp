@@ -784,12 +784,15 @@ void DmaPusher::DumpCurrentEntry(const char* reason) {
         return;
     }
     const auto& lists = dma_pushbuffer.front().command_lists;
-    const size_t first = dma_pushbuffer_subindex >= 2 ? dma_pushbuffer_subindex - 2 : 0;
+    // EDEN_NX2_PB_TRACE: the 40 entries before too, whole (the raw header has the level bit).
+    const size_t back = g_record_parsed_entries ? 40 : 2;
+    const u64 max_words = g_record_parsed_entries ? 0x200 : 0x80;
+    const size_t first = dma_pushbuffer_subindex >= back ? dma_pushbuffer_subindex - back : 0;
     for (size_t i = first; i <= dma_pushbuffer_subindex && i < lists.size(); ++i) {
         const CommandListHeader& header = lists[i];
-        LOG_WARNING(HW_GPU, "  entry {} of {}: addr={:#x} size={:#x}", i, lists.size(),
-                    header.addr.Value(), header.size.Value());
-        for (u64 word = 0; word < std::min<u64>(header.size, 0x80); word += 8) {
+        LOG_WARNING(HW_GPU, "  entry {} of {}: addr={:#x} size={:#x} raw={:#018x}", i,
+                    lists.size(), header.addr.Value(), header.size.Value(), header.raw);
+        for (u64 word = 0; word < std::min<u64>(header.size, max_words); word += 8) {
             std::string gpu_line;
             std::string cpu_line;
             for (u64 j = word; j < std::min<u64>(header.size, word + 8); ++j) {
