@@ -250,40 +250,7 @@ bool DmaPusher::Step() {
         }
         command_resume_offset = 0;
         if (dma_state.method_count != 0) {
-            // A command list the GPU wrote (title 1's culling fills 5-word entries) that ends
-            // inside a method would take the next entry's header as data and misparse the rest
-            // of the stream. Drop the method instead. EDEN_NX2_KEEP_GPU_SPLIT=1 keeps it.
-            static const bool keep_gpu_split = std::getenv("EDEN_NX2_KEEP_GPU_SPLIT") != nullptr;
-            if (!keep_gpu_split &&
-                IsGpuWrittenCommands(header.addr, size_t{header.size} * sizeof(u32))) {
-                static std::atomic<u32> dropped{};
-                if (const u32 count = dropped.fetch_add(1); count < 16 || count % 1000 == 0) {
-                    std::array<u32, 8> words{};
-                    memory_manager.ReadBlockUnsafe(
-                        header.addr, words.data(),
-                        (std::min<size_t>)(header.size, words.size()) * sizeof(u32));
-                    LOG_WARNING(HW_GPU,
-                                "GPU-written command list {:#x}+{:#x} ends inside method {:#x} "
-                                "({} words left): dropped (#{}); words {:08x}",
-                                u64{header.addr}, u64{header.size}, dma_state.method,
-                                dma_state.method_count, count + 1, fmt::join(words, " "));
-                }
-                dma_state.method_count = 0;
-                dma_state.non_incrementing = false;
-                dma_state.is_last_call = true;
-            } else {
-                if (static std::atomic<u32> logged{}; header.size <= 8 && logged.fetch_add(1) < 16) {
-                    std::array<u32, 8> words{};
-                    memory_manager.ReadBlockUnsafe(header.addr, words.data(),
-                                                   size_t{header.size} * sizeof(u32));
-                    LOG_INFO(HW_GPU,
-                             "Small command list {:#x}+{:#x} ends inside method {:#x} ({} words "
-                             "left), not GPU-written; words {:08x}",
-                             u64{header.addr}, u64{header.size}, dma_state.method,
-                             dma_state.method_count, fmt::join(words, " "));
-                }
-                split_method_end = header.addr + header.size * sizeof(u32);
-            }
+            split_method_end = header.addr + header.size * sizeof(u32);
         }
     }
 
