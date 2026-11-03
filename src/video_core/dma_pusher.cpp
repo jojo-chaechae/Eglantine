@@ -169,11 +169,59 @@ bool DmaPusher::Step() {
                                                      size_t{header.size} * sizeof(u32)) &&
                                !(use_safe && memory_manager.IsMemoryDirty(dma_state.dma_get,
                                                                           header.size * sizeof(u32)));
+        // EDEN_NX2_LIST_VERIFY=1 (diagnostic, split off): compare every fast read with a safe
+        // read, log where they differ and which caches held the newer words, run the safe words.
+        static const bool list_verify = std::getenv("EDEN_NX2_LIST_VERIFY") != nullptr;
+        static Common::ScratchBuffer<CommandHeader> verify_headers;
+        const auto verified = [&](std::span<const CommandHeader> fast,
+                                  const char* path) -> std::span<const CommandHeader> {
+            if (!list_verify || VideoCommon::GpuSplit::Get().Active()) {
+                return fast;
+            }
+            const size_t bytes = size_t{header.size} * sizeof(u32);
+            const bool dirty_buffer = memory_manager.IsMemoryDirty(
+                dma_state.dma_get, bytes, VideoCommon::CacheType::BufferCache);
+            const bool dirty_query = memory_manager.IsMemoryDirty(
+                dma_state.dma_get, bytes, VideoCommon::CacheType::QueryCache);
+            const bool dirty_texture = memory_manager.IsMemoryDirty(
+                dma_state.dma_get, bytes, VideoCommon::CacheType::TextureCache);
+            Tegra::Memory::GpuGuestMemory<CommandHeader, Tegra::Memory::GuestMemoryFlags::SafeRead>
+                safe(memory_manager, dma_state.dma_get, header.size, &verify_headers);
+            const std::span<const CommandHeader> words{safe.data(), safe.size()};
+            const size_t compared = (std::min)(words.size(), fast.size());
+            size_t first = compared;
+            for (size_t i = 0; i < compared; ++i) {
+                if (words[i].argument != fast[i].argument) {
+                    first = i;
+                    break;
+                }
+            }
+            static std::atomic<u32> checks{};
+            static std::atomic<u32> mismatches{};
+            const u32 check = checks.fetch_add(1) + 1;
+            if (first != compared || words.size() != fast.size()) {
+                if (mismatches.fetch_add(1) < 64) {
+                    LOG_WARNING(HW_GPU,
+                                "List verify: {} read of {:#x} ({} words) differs at word {}: "
+                                "fast {:#010x} safe {:#010x}; dirty buffer {} query {} texture {}; "
+                                "gpu-written {} (check {})",
+                                path, u64{dma_state.dma_get}, u64{header.size}, first,
+                                first < fast.size() ? fast[first].argument : 0u,
+                                first < words.size() ? words[first].argument : 0u, dirty_buffer,
+                                dirty_query, dirty_texture,
+                                IsGpuWrittenCommands(dma_state.dma_get, bytes), check);
+                }
+            } else if (check % 200000 == 0) {
+                LOG_INFO(HW_GPU, "List verify: {} reads, {} differed", check, mismatches.load());
+            }
+            return words;
+        };
         if (submitted) {
-            const std::span<const CommandHeader> commands{
-                command_list.submitted_words.data() +
-                    command_list.submitted_offsets[dma_pushbuffer_subindex],
-                header.size};
+            const std::span<const CommandHeader> commands = verified(
+                {command_list.submitted_words.data() +
+                     command_list.submitted_offsets[dma_pushbuffer_subindex],
+                 header.size},
+                "snapshot");
             RecordParsedEntry(header, commands);
             command_resume_offset += ProcessCommands(commands, 0);
         } else if (use_safe) {
@@ -183,14 +231,16 @@ bool DmaPusher::Step() {
             command_resume_offset +=
                 ProcessCommands(commands.subspan(command_resume_offset), command_resume_offset);
         } else if (ReadGpuWrittenCommands(dma_state.dma_get, static_cast<u32>(header.size))) {
-            const std::span<const CommandHeader> commands{command_headers.data(), header.size};
+            const std::span<const CommandHeader> commands =
+                verified({command_headers.data(), header.size}, "list copy");
             RecordParsedEntry(header, commands);
             command_resume_offset +=
                 ProcessCommands(commands.subspan(command_resume_offset), command_resume_offset);
         } else {
             FlushGpuWrittenCommands(dma_state.dma_get, size_t{header.size} * sizeof(u32));
             Tegra::Memory::GpuGuestMemory<Tegra::CommandHeader, Tegra::Memory::GuestMemoryFlags::UnsafeRead>headers(memory_manager, dma_state.dma_get, header.size, &command_headers);
-            const std::span<const CommandHeader> commands{headers.data(), headers.size()};
+            const std::span<const CommandHeader> commands =
+                verified({headers.data(), headers.size()}, "unsafe");
             RecordParsedEntry(header, commands);
             command_resume_offset +=
                 ProcessCommands(commands.subspan(command_resume_offset), command_resume_offset);
