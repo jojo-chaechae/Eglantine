@@ -557,12 +557,19 @@ GraphicsEnvironment::GraphicsEnvironment(Tegra::Engines::Maxwell3D& maxwell3d_,
                          (program == Maxwell::ShaderType::VertexB ||
                           program == Maxwell::ShaderType::Tessellation)};
     if (native) {
+        // Geometry programs are lowered too (EDEN_NATIVE_LOWER_GS=0 rejects them).
+        static const bool lower_geometry = [] {
+            const char* value = std::getenv("EDEN_NATIVE_LOWER_GS");
+            return value == nullptr || value[0] != '0';
+        }();
         if (program != Maxwell::ShaderType::VertexB && program != Maxwell::ShaderType::Pixel &&
-            !mesh_slot) {
+            !(program == Maxwell::ShaderType::Geometry && lower_geometry) && !mesh_slot) {
             throw Shader::RuntimeError("Unsupported native graphics shader stage {}", static_cast<u32>(program));
         }
         if (std::getenv("EDEN_NATIVE_DRAW_DIAGNOSTICS")) {
-            const u32 native_stage = program == Maxwell::ShaderType::Pixel ? 4 : 0;
+            const u32 native_stage = program == Maxwell::ShaderType::Pixel      ? 4
+                                   : program == Maxwell::ShaderType::Geometry ? 3
+                                                                              : 0;
             const auto& table = maxwell3d->state.shader_stages[native_stage].const_buffers[1];
             if (table.enabled && table.size && table.size <= Tegra::Engines::Maxwell3D::Regs::MaxConstBufferSize) {
                 std::vector<u8> bytes(table.size);

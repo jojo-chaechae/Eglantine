@@ -2843,6 +2843,34 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
                 return finish(index); // the closing self-branch
             break;
         }
+        case 0x34e: { // LEPC: 64-bit address of the next instruction
+            // Only seen in geometry shader prologues, where the address (plus an offset) is consumed
+            // by opcode 0x357 below and the registers are overwritten right after. Native code
+            // addresses mean nothing in the lowered program, so it reads as zero.
+            if (insn.Bits(24, 8) || insn.words[1] || insn.words[2] || dest >= 254)
+                return fail(index, "native program counter load mode");
+            mov_imm(static_cast<u32>(dest), 0);
+            mov_imm(static_cast<u32>(dest) + 1, 0);
+            break;
+        }
+        case 0x357: // Takes the LEPC-derived address in geometry shader prologues; no Maxwell counterpart.
+            if (insn.Bits(16, 8) || insn.Bits(32, 32) || insn.words[2] || native_predicate != 7)
+                return fail(index, "native geometry prologue mode");
+            break;
+        case 0x324: case 0x924: { // OUT (geometry emit/cut), register or immediate stream
+            const u32 type = insn.Bits(78, 2);
+            if (!type || insn.words[2] & ~0xc000U) return fail(index, "native geometry output mode");
+            // Maxwell: output handle at 8, stream at 20, emit at 39, cut at 40.
+            const u64 handle = u64{insn.Bits(24, 8)} << 8;
+            const u64 flags = u64{type} << 39;
+            if (opcode == 0x324) {
+                emit(base(0xfbe0000000000000ULL) | handle | (u64{insn.Bits(32, 8)} << 20) | flags);
+            } else {
+                if (insn.words[1] > 0x7ffff) return fail(index, "native geometry output stream");
+                emit(base(0xf6e0000000000000ULL) | handle | (u64{insn.words[1]} << 20) | flags);
+            }
+            break;
+        }
         case 0x923: case 0x927: { // ISBERD / ISBEWR: task and mesh programs' stage buffer.
             // Ampere: Ra 24-31, offset 40-63, ISBERD dest 16-23, ISBEWR data 32-39; 75 = .32 (else
             // U8), 76-77 = 3 .ATTR (0 the map region), 78 = .SKEW, 79 = .O (the output buffer).
@@ -2851,6 +2879,12 @@ inline LoweredProgram LowerToMaxwellWith(std::span<const Instruction> code, u32 
             // .ATTR 45, .SKEW 46, .O 47, write 48. Addresses are linear bytes in the region.
             const bool write = opcode == 0x927;
             const u32 region = insn.Bits(76, 2);
+            if (!write && region == 0 && !insn.Bits(32, 32) && !insn.words[2] && insn.Bits(24, 8) != 255) {
+                // Geometry map read: vertex index to attribute handle. Eden's ALD takes the index
+                // itself (Maxwell ISBERD in this mode is a copy), so this is a move.
+                emit(base(0x5c98000000000000ULL) | (u64{15} << 39) | (u64{insn.Bits(24, 8)} << 20));
+                break;
+            }
             const bool output = insn.Bits(79, 1) != 0;
             if ((insn.words[2] & ~0xf800U) != 0 || (region != 0 && region != 3) || write != output ||
                 (!write && region != 3) || (!write && dest == 255))
