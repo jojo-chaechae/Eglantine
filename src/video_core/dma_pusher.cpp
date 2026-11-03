@@ -124,12 +124,8 @@ bool DmaPusher::Step() {
         if (command_resume_offset == 0) {
             // A method's data continues across GP entries, whatever their level: title 4 ends a
             // main entry after a macro's first word and supplies the remaining parameters in a
-            // 5-word subroutine entry (title 1 does too, the words its culling writes). Unless
-            // the next entry is longer than the data left and a later entry of the submission
-            // starts where the split one ended: title 1 also ends an entry after a header and
-            // resumes that buffer there, with other buffers' entries in between, which start
-            // clean. The split method waits for it. EDEN_NX2_PARK_SPLIT_METHODS restores the old
-            // guess (any entry elsewhere starts clean).
+            // 5-word subroutine entry. EDEN_NX2_PARK_SPLIT_METHODS restores the old guess (an
+            // entry elsewhere is a call that starts clean; resume where the split one ended).
             static const bool park_split_methods = std::getenv("EDEN_NX2_PARK_SPLIT_METHODS") != nullptr;
             if (g_nx2_ampere) {
                 if (static u32 split_logs{}; dma_state.method_count != 0 && split_logs < 64) {
@@ -147,24 +143,8 @@ bool DmaPusher::Step() {
                     LOG_DEBUG(HW_GPU, "  previous entry ends {:08x}; next entry starts {:08x}",
                               fmt::join(prev_words, " "), fmt::join(next_words, " "));
                 }
-                bool park = park_split_methods;
-                if (!park && dma_state.method_count != 0 && header.addr != split_method_end &&
-                    header.size > dma_state.method_count) {
-                    const auto& lists = command_list.command_lists;
-                    park = std::any_of(lists.begin() + dma_pushbuffer_subindex + 1, lists.end(),
-                                       [this](const CommandListHeader& later) {
-                                           return later.addr == split_method_end;
-                                       });
-                    if (static std::atomic<u32> parked_logs{}; park && parked_logs.fetch_add(1) < 8) {
-                        LOG_INFO(HW_GPU,
-                                 "Method {:#x} ({} words left) split at {:#x} waits for the "
-                                 "entry that resumes there; {:#x} starts clean",
-                                 dma_state.method, dma_state.method_count, split_method_end,
-                                 u64{header.addr});
-                    }
-                }
-                if (park || !parked_methods.empty()) {
-                    ResolveSplitMethod(header.addr, park);
+                if (park_split_methods) {
+                    ResolveSplitMethod(header.addr);
                 }
             }
             if (dma_pushbuffer_subindex < command_list.submit_hashes.size()) {
@@ -372,7 +352,7 @@ size_t DmaPusher::ProcessCommands(std::span<const CommandHeader> commands, size_
 // buffer (e.g. a compute dispatch) before the entry that carries the rest, which starts right
 // where the first one ended. An entry starting anywhere else is such a call: run it with a clean
 // method state and resume the unfinished method when the stream continues at that address.
-void DmaPusher::ResolveSplitMethod(GPUVAddr entry_address, bool park) {
+void DmaPusher::ResolveSplitMethod(GPUVAddr entry_address) {
     const auto continued = std::ranges::find(parked_methods, entry_address,
                                              &ParkedMethod::resume_address);
     std::optional<ParkedMethod> resume;
@@ -380,7 +360,7 @@ void DmaPusher::ResolveSplitMethod(GPUVAddr entry_address, bool park) {
         resume = *continued;
         parked_methods.erase(continued);
     }
-    if (park && dma_state.method_count != 0 && entry_address != split_method_end) {
+    if (dma_state.method_count != 0 && entry_address != split_method_end) {
         if (parked_methods.size() == MaxParkedMethods) {
             static std::atomic<u32> reported{};
             if (reported.fetch_add(1) < 8) {
