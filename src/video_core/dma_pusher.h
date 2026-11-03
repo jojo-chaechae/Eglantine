@@ -248,6 +248,11 @@ public:
         GPUVAddr address;
         u32 size;
         u64 hash;
+        u32 method;       ///< Method state carried into the entry
+        u32 method_count;
+        u32 subchannel;
+        u32 resume;       ///< command_resume_offset at parse time
+        std::array<u32, 6> words; ///< First words as parsed
     };
     std::array<ParsedEntry, 64> parsed_entries{};
     size_t parsed_entry_count{};

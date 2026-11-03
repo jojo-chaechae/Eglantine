@@ -406,7 +406,10 @@ static const u32 g_semaphore_watch = [] {
 }();
 
 // EDEN_NX2_PB_CHECK also keeps the last parsed entries, for DumpCurrentEntry.
-static const bool g_record_parsed_entries = std::getenv("EDEN_NX2_PB_CHECK") != nullptr;
+// EDEN_NX2_PB_TRACE keeps them without the submit-time hashes (cheap), and dumps them at the
+// first method sent to an unbound subchannel.
+static const bool g_record_parsed_entries = std::getenv("EDEN_NX2_PB_CHECK") != nullptr ||
+                                            std::getenv("EDEN_NX2_PB_TRACE") != nullptr;
 
 void DmaPusher::WatchArgument(u32 method, u32 argument) const {
     const u32 watch = g_semaphore_watch;
@@ -639,9 +642,13 @@ void DmaPusher::FlushGpuWrittenCommands(GPUVAddr address, size_t size) {
 void DmaPusher::ReportUnboundSubchannel() {
     // Methods sent to a subchannel with no engine (no SetObject yet) are dropped.
     static std::atomic<u32> reported{};
-    if (reported.fetch_add(1) < 8) {
+    const u32 report = reported.fetch_add(1);
+    if (report < 8) {
         LOG_WARNING(HW_GPU, "Dropping method {:#x} on unbound subchannel {}", dma_state.method,
                     dma_state.subchannel);
+    }
+    if (report == 0 && g_record_parsed_entries) {
+        DumpCurrentEntry("unbound subchannel");
     }
 }
 
@@ -672,7 +679,13 @@ void DmaPusher::RecordParsedEntry(const CommandListHeader& header,
     for (const CommandHeader& command : commands) {
         hash = (hash ^ command.argument) * 0x100000001b3ULL;
     }
-    parsed_entries[parsed_entry_count++ % parsed_entries.size()] = {header.addr, static_cast<u32>(header.size), hash};
+    ParsedEntry& entry = parsed_entries[parsed_entry_count++ % parsed_entries.size()];
+    entry = {header.addr,          static_cast<u32>(header.size), hash,
+             dma_state.method,     dma_state.method_count,        dma_state.subchannel,
+             static_cast<u32>(command_resume_offset), {}};
+    for (size_t i = 0; i < (std::min)(commands.size(), entry.words.size()); ++i) {
+        entry.words[i] = commands[i].argument;
+    }
 }
 
 void DmaPusher::DumpCurrentEntry(const char* reason) {
@@ -685,8 +698,13 @@ void DmaPusher::DumpCurrentEntry(const char* reason) {
         for (const u32 word : words) {
             hash = (hash ^ word) * 0x100000001b3ULL;
         }
-        LOG_WARNING(HW_GPU, "  parsed -{}: {:#x}+{:#x} {}", i, entry.address, entry.size,
-                    hash == entry.hash ? "unchanged" : "CHANGED since parsed");
+        LOG_WARNING(HW_GPU,
+                    "  parsed -{}: {:#x}+{:#x} {} (in: method {:#x} count {} sub {} resume {}) "
+                    "words {:08x}",
+                    i, entry.address, entry.size,
+                    hash == entry.hash ? "unchanged" : "CHANGED since parsed", entry.method,
+                    entry.method_count, entry.subchannel, entry.resume,
+                    fmt::join(entry.words, " "));
     }
     // EDEN_NX2_PB_DUMP=<file>: also write the whole command list (u64 address, u32 size and the
     // current words of every entry, then the current entry index) for offline replay.
