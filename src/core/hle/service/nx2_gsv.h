@@ -481,7 +481,10 @@ private:
             // Two-page regions hold queue semaphores: GPU releases go to the second page, waits
             // read the first (see video_core/nx2.h).
             if (last - start + 1 == 0x2000) {
-                Tegra::Nx2AddSemaphoreRegion(start);
+                if (!Tegra::Nx2AddSemaphoreRegion(start)) {
+                    LOG_WARNING(Service, "nx2:gpu semaphore region table full: {:#x} not mirrored",
+                                start);
+                }
                 LOG_DEBUG(Service, "nx2:gpu semaphore page {:#x} mirrored to {:#x}", start + 0x1000,
                          start);
             }

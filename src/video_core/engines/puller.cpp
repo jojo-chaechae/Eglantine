@@ -107,6 +107,13 @@ bool Puller::CanResumeAcquire(DmaPusher& dma_pusher) {
                     dma_pusher.memory_manager.Read<u32>((pending_acquire->address & ~GPUVAddr{0xf}) + 4),
                     dma_pusher.memory_manager.Read<u32>((pending_acquire->address & ~GPUVAddr{0xf}) + 8),
                     dma_pusher.memory_manager.Read<u32>((pending_acquire->address & ~GPUVAddr{0xf}) + 12));
+        if (g_nx2_ampere) {
+            const GPUVAddr second = pending_acquire->address + 0x1000;
+            LOG_WARNING(HW_GPU, "  second page {:#x} holds {:#x}; mirrored region: {}; {} regions in use",
+                        second, dma_pusher.memory_manager.Read<u32>(second),
+                        Nx2SemaphoreMirror(second) == pending_acquire->address,
+                        Nx2SemaphoreRegionCount());
+        }
     }
     return false;
 }

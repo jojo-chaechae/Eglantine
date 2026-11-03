@@ -209,7 +209,7 @@ bool DmaPusher::Step() {
                 static std::atomic<u32> checked{};
                 static std::atomic<u32> logged{};
                 const u32 count = checked.fetch_add(1) + 1;
-                if (differing != 0 && logged.fetch_add(1) < 200) {
+                if (differing != 0 && header.size != 5 && logged.fetch_add(1) < 200) {
                     const size_t from = first;
                     const size_t to = (std::min)(fast.size(), from + 6);
                     std::string live_words;

@@ -97,18 +97,28 @@ inline void Nx2ClearGpuWrittenPages() {
 inline constexpr size_t Nx2MaxSemaphoreRegions = 32;
 inline std::array<std::atomic<u64>, Nx2MaxSemaphoreRegions> g_nx2_semaphore_regions{}; // starts
 
-inline void Nx2AddSemaphoreRegion(u64 start) {
+/// False if the table is full (the region's releases are then not mirrored).
+inline bool Nx2AddSemaphoreRegion(u64 start) {
     for (auto& region : g_nx2_semaphore_regions) {
         if (region.load() == start) {
-            return;
+            return true;
         }
     }
     for (auto& region : g_nx2_semaphore_regions) {
         u64 expected = 0;
         if (region.compare_exchange_strong(expected, start)) {
-            return;
+            return true;
         }
     }
+    return false;
+}
+
+[[nodiscard]] inline size_t Nx2SemaphoreRegionCount() {
+    size_t count = 0;
+    for (const auto& region : g_nx2_semaphore_regions) {
+        count += region.load(std::memory_order_relaxed) != 0 ? 1 : 0;
+    }
+    return count;
 }
 
 /// The region's memory was destroyed: stop mirroring into it.
