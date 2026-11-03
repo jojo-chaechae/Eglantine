@@ -240,7 +240,7 @@ public:
         bool increment_once;
         GPUVAddr resume_address; ///< Where the entry that continues the method starts
     };
-    void ResolveSplitMethod(GPUVAddr entry_address);
+    void ResolveSplitMethod(GPUVAddr entry_address, bool park);
     static constexpr size_t MaxParkedMethods = 16;
 
     // Debug aid: hashes of the words of the last entries as they were parsed.
