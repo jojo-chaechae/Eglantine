@@ -444,6 +444,14 @@ void DmaPusher::CallMethod(u32 argument) {
             ReportUnboundSubchannel();
             return;
         }
+        if (g_record_parsed_entries &&
+            subchannel_type[dma_state.subchannel] == Engines::EngineTypes::KeplerMemory &&
+            dma_state.method >= 0x7f) {
+            if (static bool dumped = false; !dumped) {
+                dumped = true;
+                DumpCurrentEntry("KeplerMemory method out of range");
+            }
+        }
         // Compute dispatches and DMA copies write the command lists ReadGpuWrittenCommands reads.
         const auto engine_type = subchannel_type[dma_state.subchannel];
         const bool writer = engine_type == Engines::EngineTypes::KeplerCompute ||
@@ -502,6 +510,14 @@ void DmaPusher::CallMultiMethod(const u32* base_start, u32 num_methods) {
         if (subchannel == nullptr) {
             ReportUnboundSubchannel();
             return;
+        }
+        if (g_record_parsed_entries &&
+            subchannel_type[dma_state.subchannel] == Engines::EngineTypes::KeplerMemory &&
+            dma_state.method >= 0x7f) {
+            if (static bool dumped = false; !dumped) {
+                dumped = true;
+                DumpCurrentEntry("KeplerMemory method out of range");
+            }
         }
         // Compute dispatches and DMA copies write the command lists ReadGpuWrittenCommands reads.
         const auto engine_type = subchannel_type[dma_state.subchannel];
